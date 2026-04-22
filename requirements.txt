@@ -1,0 +1,4 @@
+pydantic-ai>=0.0.14
+pystata  # comes with Stata install (Stata 17+ only)
+openai>=1.0.0   # OpenAI-compatible client used for all HF providers in hf_agent.py
+pyyaml>=6.0     # config.yaml parsing
