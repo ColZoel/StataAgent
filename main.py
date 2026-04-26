@@ -1,9 +1,30 @@
-"""Minimal REPL for interacting with StataAgent."""
+"""Minimal REPL for interacting with StataAgent (Anthropic/Claude backend)."""
+import argparse
 from pydantic_ai.messages import ModelMessage
 from agent import agent, StataContext
 
 
-def main():
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="StataAgent — Anthropic/Claude edition",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  python main.py\n"
+            "  python main.py --reset   # re-run Stata installation discovery"
+        ),
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear the saved Stata installation config and re-run discovery",
+    )
+    args = parser.parse_args()
+
+    if args.reset:
+        from config import reset_saved_config
+        reset_saved_config()
+
     ctx = StataContext()
     history: list[ModelMessage] = []
     print("StataAgent ready. Type your question, or 'quit' to exit.\n")

@@ -96,6 +96,41 @@ class AgentConfig:
             max_tokens=int(raw.get("max_tokens", 4096)),
         )
 
+    def apply_overrides(
+        self,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        api_key_env: str | None = None,
+        base_url: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
+        """Apply CLI overrides on top of the YAML values for this session only.
+
+        Only non-None arguments are applied, so callers can pass argparse
+        values directly without pre-filtering unset flags.
+        Raises ValueError for an unrecognised provider.
+        """
+        if provider is not None:
+            supported = set(_PROVIDER_BASE_URLS) | {"openai_compatible"}
+            if provider not in supported:
+                raise ValueError(
+                    f"Unknown provider '{provider}'. "
+                    f"Choose one of: {', '.join(sorted(supported))}"
+                )
+            self.provider = provider
+        if model is not None:
+            self.model = model
+        if api_key_env is not None:
+            self.api_key_env = api_key_env
+        if base_url is not None:
+            self.base_url = base_url
+        if temperature is not None:
+            self.temperature = temperature
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
+
 
 # ---------------------------------------------------------------------------
 # Model builder
@@ -264,9 +299,91 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
 # ---------------------------------------------------------------------------
 # REPL entry point
 # ---------------------------------------------------------------------------
-def main(config_path: str = "config.yaml") -> None:
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="StataAgent — HuggingFace edition",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "CLI flags override the corresponding config.yaml values for this\n"
+            "session only — the file is never modified.\n\n"
+            "examples:\n"
+            "  python hf_agent.py --reset\n"
+            "  python hf_agent.py --provider groq --model llama3-8b-8192\n"
+            "  python hf_agent.py --temperature 0.1 --max-tokens 2048\n"
+            "  python hf_agent.py --config my_project.yaml --provider together"
+        ),
+    )
+
+    # Config file
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        metavar="PATH",
+        help="YAML config file to load (default: config.yaml)",
+    )
+
+    # Stata reset
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear the saved Stata installation config and re-run discovery",
+    )
+
+    # Model / provider overrides
+    parser.add_argument(
+        "--provider",
+        metavar="NAME",
+        help="Override provider (huggingface | together | fireworks | groq | ollama | openai_compatible)",
+    )
+    parser.add_argument(
+        "--model",
+        metavar="ID",
+        help="Override model identifier as the provider expects it",
+    )
+    parser.add_argument(
+        "--api-key-env",
+        metavar="VAR",
+        dest="api_key_env",
+        help="Override the env-var name that holds the API key",
+    )
+    parser.add_argument(
+        "--base-url",
+        metavar="URL",
+        dest="base_url",
+        help="Override the provider base URL (required for openai_compatible)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        metavar="FLOAT",
+        help="Override sampling temperature (0.0 – 1.0)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        metavar="INT",
+        dest="max_tokens",
+        help="Override maximum tokens in the model response",
+    )
+
+    args = parser.parse_args()
+
+    # Handle Stata config reset before anything else
+    if args.reset:
+        from config import reset_saved_config
+        reset_saved_config()
+
+    # Load base config then apply any CLI overrides
     try:
-        cfg = AgentConfig.from_yaml(config_path)
+        cfg = AgentConfig.from_yaml(args.config)
+        cfg.apply_overrides(
+            provider=args.provider,
+            model=args.model,
+            api_key_env=args.api_key_env,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
     except (FileNotFoundError, ValueError, EnvironmentError) as e:
         print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -298,11 +415,4 @@ def main(config_path: str = "config.yaml") -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="StataAgent — HuggingFace edition")
-    parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Path to the YAML config file (default: config.yaml)",
-    )
-    args = parser.parse_args()
-    main(args.config)
+    main()

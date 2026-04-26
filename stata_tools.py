@@ -5,12 +5,14 @@ you can test Stata integration without any LLM involved.
 """
 from dataclasses import dataclass
 from config import initialize_pystata
-initialize_pystata()
-from pystata import config, stata
 
-# Initialize pystata once at module load.
-# Adjust the path and edition ('be', 'se', 'mp') to match your install.
-config.init('se')
+# Locate Stata, extend sys.path, and call pystata's config.init() —
+# all in one call. Edition and path are resolved via the strategy chain
+# in config.py (env vars → saved config → autodetect → interactive prompt).
+# Must run before 'from pystata import stata'.
+initialize_pystata()
+
+from pystata import stata  # noqa: E402
 
 
 @dataclass
