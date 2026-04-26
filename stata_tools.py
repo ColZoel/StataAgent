@@ -4,6 +4,8 @@ they're plain Python functions. Keeping this layer separate means
 you can test Stata integration without any LLM involved.
 """
 from dataclasses import dataclass
+from config import initialize_pystata
+initialize_pystata()
 from pystata import config, stata
 
 # Initialize pystata once at module load.
