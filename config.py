@@ -316,16 +316,15 @@ def initialize_pystata(*, reset: bool = False) -> None:
     Steps executed in strict order:
       1. find_stata() → resolves path and edition (prompting if needed)
       2. sys.path.insert → makes 'from pystata import ...' importable
-      3. pystata config.init() → starts the Stata engine, passing both
-         the installation root and the edition so the executable is found
-         even when Stata is not in a default OS location
+      3. pystata config.init(edition) → starts the Stata engine; pystata
+         locates the executable automatically from its own position on
+         sys.path (the utilities/ directory added in step 2)
     """
     if reset:
         reset_saved_config()
 
     install = find_stata()
-    stata_install_root = install.path.parent   # parent of utilities/
     sys.path.insert(0, str(install.path))
 
     from pystata import config as _pystata_config  # noqa: PLC0415
-    _pystata_config.init(install.edition, stata_path=str(stata_install_root))
+    _pystata_config.init(install.edition)
