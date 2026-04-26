@@ -1,0 +1,60 @@
+# StataAgent — HuggingFace provider configuration
+# Used by hf_agent.py. Edit this file to switch models or providers.
+
+# ---------------------------------------------------------------------------
+# Provider
+# ---------------------------------------------------------------------------
+# Which inference provider hosts the model.
+# Supported values:
+#   huggingface       — HuggingFace Serverless Inference API (free tier available)
+#   together          — Together AI  (https://api.together.xyz)
+#   fireworks         — Fireworks AI (https://fireworks.ai)
+#   groq              — Groq         (https://console.groq.com)
+#   ollama            — Ollama local server (no API key needed)
+#   openai_compatible — Any other OpenAI-compatible endpoint; set base_url below
+provider: huggingface
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+# The model identifier exactly as the provider expects it.
+# Examples per provider:
+#   huggingface  → "meta-llama/Meta-Llama-3-8B-Instruct"
+#                  "mistralai/Mistral-7B-Instruct-v0.3"
+#                  "HuggingFaceH4/zephyr-7b-beta"
+#   together     → "meta-llama/Meta-Llama-3-8B-Instruct-Turbo"
+#                  "mistralai/Mixtral-8x7B-Instruct-v0.1"
+#   fireworks    → "accounts/fireworks/models/llama-v3-8b-instruct"
+#   groq         → "llama3-8b-8192"
+#                  "mixtral-8x7b-32768"
+#   ollama       → "llama3"   (must be pulled locally first: `ollama pull llama3`)
+model: meta-llama/Meta-Llama-3-8B-Instruct
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+# Name of the environment variable that holds the API key.
+# hf_agent.py reads os.environ[api_key_env] at startup.
+# Set to null only for ollama (no auth needed).
+#
+# Recommended env var names by provider:
+#   huggingface  → HF_TOKEN
+#   together     → TOGETHER_API_KEY
+#   fireworks    → FIREWORKS_API_KEY
+#   groq         → GROQ_API_KEY
+#   ollama       → null
+api_key_env: HF_TOKEN
+
+# ---------------------------------------------------------------------------
+# Base URL (optional override)
+# ---------------------------------------------------------------------------
+# Leave null to use the provider's default endpoint.
+# Required only for provider: openai_compatible.
+# Example: "https://my-vllm-server.internal/v1"
+base_url: null
+
+# ---------------------------------------------------------------------------
+# Generation parameters
+# ---------------------------------------------------------------------------
+temperature: 0.3      # lower = more deterministic; good for data analysis
+max_tokens: 4096      # maximum tokens in the model's response
