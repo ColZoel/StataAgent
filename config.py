@@ -29,26 +29,33 @@ COMMON_PATHS = {
 
 
 def _normalize_user_path(raw: str) -> Path:
-    """Clean up paths from user input.
+    """Normalize a raw path string before any filesystem operations.
 
-    Handles: surrounding quotes from copy-paste, trailing whitespace,
-    home directory expansion, and resolution of relative paths."""
-    cleaned = raw.strip().strip('"').strip("'")
+    Handles, in order:
+      1. Surrounding whitespace from copy-paste or YAML values
+      2. Surrounding quotes (single or double) from copy-paste
+      3. Shell environment variables ($HOME, %APPDATA%, etc.)
+      4. Home-directory shorthand (~)
+      5. Resolution of relative segments (..) to an absolute path
+      6. Platform path-separator normalization (/ ↔ \\) via pathlib
+    """
+    cleaned = raw.strip().strip('"').strip("'").strip()
+    cleaned = os.path.expandvars(cleaned)   # $VAR / %VAR%
     return Path(cleaned).expanduser().resolve()
 
 
 def _is_valid_stata_path(path: Path) -> bool:
-    """A path is valid if it contains pystata."""
-    path = _normalize_user_path(path)
+    """Return True if *path* (already a resolved Path) contains pystata."""
     return (path / "pystata").is_dir()
 
 
 def _from_env() -> Path | None:
     """Strategy 1: environment variable."""
     val = os.environ.get("STATA_PATH")
-    if val and _is_valid_stata_path(Path(val)):
-        return Path(val)
-    return None
+    if not val:
+        return None
+    path = _normalize_user_path(val)
+    return path if _is_valid_stata_path(path) else None
 
 
 def _from_config() -> Path | None:
@@ -58,19 +65,20 @@ def _from_config() -> Path | None:
     try:
         with open(CONFIG_PATH) as f:
             data = yaml.safe_load(f) or {}
-        path = Path(data.get("stata_path", ""))
-        if _is_valid_stata_path(path):
-            return path
+        raw = data.get("stata_path", "")
+        if not raw:
+            return None
+        path = _normalize_user_path(str(raw))
+        return path if _is_valid_stata_path(path) else None
     except (yaml.YAMLError, OSError):
-        pass
-    return None
+        return None
 
 
 def _autodetect() -> Path | None:
     """Strategy 3: scan common install locations."""
     candidates = COMMON_PATHS.get(platform.system(), [])
     for candidate in candidates:
-        path = Path(candidate)
+        path = _normalize_user_path(candidate)
         if _is_valid_stata_path(path):
             return path
     return None
@@ -88,13 +96,14 @@ def _interactive_prompt() -> Path | None:
 
     while True:
         try:
-            user_input = input("Stata utilities path: ").strip()
+            raw = input("Stata utilities path: ")
         except (EOFError, KeyboardInterrupt):
             return None
 
-        if _is_valid_stata_path(user_input):
-            return user_input
-        print(f"Couldn't find pystata at {user_input}. Try again, or Ctrl+C to quit.")
+        path = _normalize_user_path(raw)
+        if _is_valid_stata_path(path):
+            return path
+        print(f"Couldn't find pystata at '{path}'. Try again, or Ctrl+C to quit.")
 
 
 def _save_config(path: Path) -> None:
