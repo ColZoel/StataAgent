@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.settings import ModelSettings
@@ -162,11 +163,13 @@ def build_model(cfg: AgentConfig) -> LiteLLMModel:
                 "api_key_env is required for this provider. "
                 "Set it in config.yaml (e.g. api_key_env: HF_TOKEN)."
             )
+        load_dotenv()
         api_key = os.environ.get(cfg.api_key_env)
         if not api_key:
             raise EnvironmentError(
                 f"Environment variable '{cfg.api_key_env}' is not set.\n"
-                f"Export it before running: export {cfg.api_key_env}=<your-key>"
+                f"Set it in your shell or add it to a .env file: "
+                f"{cfg.api_key_env}=<your-key>"
             )
         kwargs["api_key"] = api_key
 
