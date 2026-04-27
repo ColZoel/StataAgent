@@ -12,12 +12,13 @@
 #   groq              — Groq         (https://console.groq.com)
 #   ollama            — Ollama local server (no API key needed)
 #   openai_compatible — Any other OpenAI-compatible endpoint; set base_url below
-provider: huggingface
+provider: openai_compatible
 
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
-# The model identifier exactly as the provider expects it.
+# The model identifier exactly as the provider expects it (without the
+# provider prefix — hf_agent.py prepends the LiteLLM prefix automatically).
 # Examples per provider:
 #   huggingface  → "meta-llama/Meta-Llama-3-8B-Instruct"
 #                  "mistralai/Mistral-7B-Instruct-v0.3"
@@ -28,7 +29,11 @@ provider: huggingface
 #   groq         → "llama3-8b-8192"
 #                  "mixtral-8x7b-32768"
 #   ollama       → "llama3"   (must be pulled locally first: `ollama pull llama3`)
-model: meta-llama/Meta-Llama-3-8B-Instruct
+#   openai_compatible → whatever model name the server expects
+#
+# LiteLLM model string sent to the API: "<litellm_prefix>/<model>"
+#   e.g. provider=groq + model=llama3-8b-8192 → "groq/llama3-8b-8192"
+model: meta-llama/Meta-Llama-3-8B-Instruct  # model name sent in the request body
 
 # ---------------------------------------------------------------------------
 # Authentication
@@ -51,7 +56,7 @@ api_key_env: HF_TOKEN
 # Leave null to use the provider's default endpoint.
 # Required only for provider: openai_compatible.
 # Example: "https://my-vllm-server.internal/v1"
-base_url: null
+base_url: https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct/v1
 
 # ---------------------------------------------------------------------------
 # Generation parameters
