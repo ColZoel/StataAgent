@@ -17,7 +17,8 @@ provider: huggingface
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
-# The model identifier exactly as the provider expects it.
+# The model identifier exactly as the provider expects it (without the
+# provider prefix — hf_agent.py prepends the LiteLLM prefix automatically).
 # Examples per provider:
 #   huggingface  → "meta-llama/Meta-Llama-3-8B-Instruct"
 #                  "mistralai/Mistral-7B-Instruct-v0.3"
@@ -28,6 +29,10 @@ provider: huggingface
 #   groq         → "llama3-8b-8192"
 #                  "mixtral-8x7b-32768"
 #   ollama       → "llama3"   (must be pulled locally first: `ollama pull llama3`)
+#   openai_compatible → whatever model name the server expects
+#
+# LiteLLM model string sent to the API: "<litellm_prefix>/<model>"
+#   e.g. provider=groq + model=llama3-8b-8192 → "groq/llama3-8b-8192"
 model: meta-llama/Meta-Llama-3-8B-Instruct
 
 # ---------------------------------------------------------------------------

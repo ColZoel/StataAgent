@@ -1,9 +1,9 @@
 """
-HuggingFace-backed StataAgent.
+HuggingFace-backed StataAgent — powered by LiteLLM.
 
 Reads provider / model / auth settings from config.yaml (or a path you pass)
-and builds a PydanticAI agent backed by any OpenAI-compatible inference
-provider that hosts HuggingFace models.
+and builds a PydanticAI agent via pydantic-ai-litellm, which supports 100+
+providers through a unified prefix-based model string.
 
 Supported providers (set in config.yaml):
   huggingface       — HF Serverless Inference API
@@ -26,11 +26,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from openai import AsyncOpenAI
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai_litellm import LiteLLMModel
 
 from stata_tools import (
     StataResult,
@@ -43,14 +42,16 @@ from stata_tools import (
 )
 
 # ---------------------------------------------------------------------------
-# Known provider endpoints
+# LiteLLM provider prefixes
+# LiteLLM model strings take the form "<prefix>/<model-id>".
 # ---------------------------------------------------------------------------
-_PROVIDER_BASE_URLS: dict[str, str] = {
-    "huggingface": "https://api-inference.huggingface.co/v1",
-    "together": "https://api.together.xyz/v1",
-    "fireworks": "https://api.fireworks.ai/inference/v1",
-    "groq": "https://api.groq.com/openai/v1",
-    "ollama": "http://localhost:11434/v1",
+_LITELLM_PREFIXES: dict[str, str] = {
+    "huggingface": "huggingface",
+    "together": "together_ai",
+    "fireworks": "fireworks_ai",
+    "groq": "groq",
+    "ollama": "ollama_chat",      # ollama_chat is preferred over ollama/
+    "openai_compatible": "openai",
 }
 
 _PROVIDERS_WITHOUT_AUTH = {"ollama"}
@@ -80,7 +81,7 @@ class AgentConfig:
             raw = yaml.safe_load(f)
 
         provider = str(raw.get("provider", "huggingface")).lower()
-        supported = set(_PROVIDER_BASE_URLS) | {"openai_compatible"}
+        supported = set(_LITELLM_PREFIXES)
         if provider not in supported:
             raise ValueError(
                 f"Unknown provider '{provider}'. "
@@ -113,7 +114,7 @@ class AgentConfig:
         Raises ValueError for an unrecognised provider.
         """
         if provider is not None:
-            supported = set(_PROVIDER_BASE_URLS) | {"openai_compatible"}
+            supported = set(_LITELLM_PREFIXES)
             if provider not in supported:
                 raise ValueError(
                     f"Unknown provider '{provider}'. "
@@ -135,36 +136,41 @@ class AgentConfig:
 # ---------------------------------------------------------------------------
 # Model builder
 # ---------------------------------------------------------------------------
-def build_model(cfg: AgentConfig) -> OpenAIModel:
-    """Construct a PydanticAI OpenAIModel pointed at the right provider."""
-    # Resolve base URL
-    if cfg.base_url:
-        base_url = cfg.base_url
-    elif cfg.provider == "openai_compatible":
+def build_model(cfg: AgentConfig) -> LiteLLMModel:
+    """Construct a LiteLLMModel for the configured provider.
+
+    LiteLLM model strings take the form "<prefix>/<model-id>", e.g.
+    "groq/llama3-8b-8192" or "together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1".
+    api_key and api_base are passed as kwargs straight through to litellm.completion().
+    """
+    if cfg.provider == "openai_compatible" and not cfg.base_url:
         raise ValueError(
             "provider: openai_compatible requires a base_url in config.yaml"
         )
-    else:
-        base_url = _PROVIDER_BASE_URLS[cfg.provider]
 
-    # Resolve API key
-    if cfg.provider in _PROVIDERS_WITHOUT_AUTH:
-        api_key = "ollama"  # placeholder; Ollama ignores it
-    elif cfg.api_key_env:
+    prefix = _LITELLM_PREFIXES[cfg.provider]
+    litellm_model = f"{prefix}/{cfg.model}"
+
+    kwargs: dict[str, str] = {}
+
+    if cfg.base_url:
+        kwargs["api_base"] = cfg.base_url
+
+    if cfg.provider not in _PROVIDERS_WITHOUT_AUTH:
+        if not cfg.api_key_env:
+            raise ValueError(
+                "api_key_env is required for this provider. "
+                "Set it in config.yaml (e.g. api_key_env: HF_TOKEN)."
+            )
         api_key = os.environ.get(cfg.api_key_env)
         if not api_key:
             raise EnvironmentError(
                 f"Environment variable '{cfg.api_key_env}' is not set.\n"
                 f"Export it before running: export {cfg.api_key_env}=<your-key>"
             )
-    else:
-        raise ValueError(
-            "api_key_env is required for this provider. "
-            "Set it in config.yaml (e.g. api_key_env: HF_TOKEN)."
-        )
+        kwargs["api_key"] = api_key
 
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-    return OpenAIModel(cfg.model, openai_client=client)
+    return LiteLLMModel(litellm_model, **kwargs)
 
 
 # ---------------------------------------------------------------------------
