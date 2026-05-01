@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -36,6 +36,7 @@ from error_handler import print_error
 from stata_tools import (
     StataResult,
     describe_data,
+    get_varnames,
     load_dataset,
     regress,
     run_raw_stata,
@@ -190,6 +191,7 @@ class StataContext:
     """Tracks dataset state across tool calls."""
     dataset_loaded: bool = False
     dataset_path: str | None = None
+    varnames: set[str] = field(default_factory=set)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +253,27 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
             )
         return None
 
+    def _check_vars(ctx: RunContext[StataContext], *varnames: str | None) -> str | None:
+        """Return an error string if any variable name is not in the dataset.
+
+        Catches hallucinated variable names before Stata runs, so the agent
+        gets a clear correction rather than a cryptic Stata error.
+        Unknown names are reported with the full variable list so the model
+        can self-correct on its next attempt.
+        """
+        known = ctx.deps.varnames
+        if not known:
+            return None  # varnames not yet populated; let Stata catch it
+        bad = [v for v in varnames if v and v not in known]
+        if not bad:
+            return None
+        bad_str = ", ".join(f"'{v}'" for v in bad)
+        known_str = ", ".join(sorted(known))
+        return (
+            f"Variable(s) {bad_str} not found in the loaded dataset. "
+            f"Available variables: {known_str}"
+        )
+
     # --- tool registrations ------------------------------------------------
 
     @hf_agent.tool
@@ -260,6 +283,7 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         if result.success:
             ctx.deps.dataset_loaded = True
             ctx.deps.dataset_path = path
+            ctx.deps.varnames = set(get_varnames())
             return f"Dataset loaded from {path}.\n{result.output}"
         return f"Failed to load: {result.error}"
 
@@ -269,6 +293,8 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         Call this early to understand what's available."""
         if err := _require_dataset(ctx):
             return err
+        # Refresh varnames in case the dataset changed since load.
+        ctx.deps.varnames = set(get_varnames())
         result = describe_data()
         return result.output if result.success else f"Error: {result.error}"
 
@@ -283,6 +309,9 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         for percentiles and skewness."""
         if err := _require_dataset(ctx):
             return err
+        if varlist:
+            if err := _check_vars(ctx, *varlist.split()):
+                return err
         result = summarize(varlist, detail)
         return result.output if result.success else f"Error: {result.error}"
 
@@ -294,6 +323,8 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
     ) -> str:
         """Frequency table for one variable, or cross-tab for two variables."""
         if err := _require_dataset(ctx):
+            return err
+        if err := _check_vars(ctx, var1, var2):
             return err
         result = tabulate(var1, var2)
         return result.output if result.success else f"Error: {result.error}"
@@ -310,6 +341,8 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         (e.g. 'age > 25'). Set robust=True for heteroskedasticity-robust SEs."""
         if err := _require_dataset(ctx):
             return err
+        if err := _check_vars(ctx, dependent, *independents):
+            return err
         result = regress(dependent, independents, robust, condition)
         return result.output if result.success else f"Error: {result.error}"
 
@@ -317,7 +350,10 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
     def run_stata(ctx: RunContext[StataContext], code: str) -> str:
         """Execute arbitrary Stata code. Use this ONLY when the structured
         tools above don't cover your need (e.g. xtreg, margins, xtset,
-        user-contributed commands). Prefer structured tools whenever possible."""
+        correlate, user-contributed commands).
+        DO NOT use for: regress/regression → use run_regression instead;
+        summarize/describe → use summarize_vars/describe_dataset;
+        tabulate → use tabulate_vars."""
         if err := _require_dataset(ctx):
             return err
         result = run_raw_stata(code)

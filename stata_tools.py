@@ -77,6 +77,20 @@ def load_dataset(path: str) -> StataResult:
     return _run(f'use "{path}", clear')
 
 
+def get_varnames() -> list[str]:
+    """Return the list of variable names currently in memory.
+
+    Uses Stata's `ds` command, which stores the full variable list in
+    r(varlist). Returns an empty list if no dataset is loaded.
+    """
+    try:
+        stata.run("ds", echo=False)
+        raw = stata.get_return().get("r(varlist)", "") or ""
+        return raw.split()
+    except Exception:
+        return []
+
+
 def describe_data() -> StataResult:
     """Return variable names, types, and labels. Critical for the
     agent to understand what's in the dataset."""
