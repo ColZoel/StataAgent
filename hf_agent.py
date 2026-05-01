@@ -422,7 +422,7 @@ def main() -> None:
         try:
             result = agent.run_sync(query, deps=ctx, message_history=history)
             history = result.all_messages()
-            print(f"\n{result.data}\n")
+            print(f"\n{result.output}\n")
         except Exception as exc:
             print_error(exc)
             print()
