@@ -212,8 +212,8 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
             "   cleaner output.\n"
             "4. Fall back to `run_stata` for commands not covered by the "
             "   structured tools (e.g. xtreg, margins, xtset).\n"
-            "5. Interpret the output for the user in plain language. "
-            "   Don't just dump the Stata log — explain what it means.\n"
+            "5. Always show the raw Stata output (tables, logs) first, "
+            "   then add a brief interpretation only if it adds value.\n"
             "6. If a command fails, read the error, fix it, and retry once. "
             "   If it fails again, tell the user clearly what went wrong."
         ),
