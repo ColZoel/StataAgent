@@ -1,4 +1,4 @@
-pydantic-ai>=0.0.14
+pydantic-ai>=1.87.0
 pystata  # comes with Stata install (Stata 17+ only)
 pydantic-ai-litellm  # unified LLM provider backend; replaces direct openai SDK dependency
 pyyaml>=6.0     # config.yaml parsing
