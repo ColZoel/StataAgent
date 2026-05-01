@@ -12,7 +12,7 @@
 #   groq              — Groq         (https://console.groq.com)
 #   ollama            — Ollama local server (no API key needed)
 #   openai_compatible — Any other OpenAI-compatible endpoint; set base_url below
-provider: together
+provider: huggingface
 
 # ---------------------------------------------------------------------------
 # Model
@@ -33,7 +33,7 @@ provider: together
 #
 # LiteLLM model string sent to the API: "<litellm_prefix>/<model>"
 #   e.g. provider=groq + model=llama3-8b-8192 → "groq/llama3-8b-8192"
-model: meta-llama/Llama-3.3-70B-Instruct  # model name sent in the request body
+model: sambanova/meta-llama/Llama-3.3-70B-Instruct  # model name sent in the request body
 
 # ---------------------------------------------------------------------------
 # Authentication
