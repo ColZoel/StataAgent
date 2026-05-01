@@ -63,3 +63,12 @@ base_url: null
 # ---------------------------------------------------------------------------
 temperature: 0.3      # lower = more deterministic; good for data analysis
 max_tokens: 4096      # maximum tokens in the model's response
+
+# ---------------------------------------------------------------------------
+# Commentary
+# ---------------------------------------------------------------------------
+# When true (default), the model explains results in plain language after
+# showing the raw Stata output.
+# When false, the model returns only the raw Stata output with no prose.
+# Can be toggled per-session with --no-commentary / --commentary CLI flags.
+commentary: false

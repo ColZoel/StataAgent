@@ -70,6 +70,7 @@ class AgentConfig:
     base_url: str | None
     temperature: float
     max_tokens: int
+    commentary: bool = True
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.yaml") -> "AgentConfig":
@@ -97,6 +98,7 @@ class AgentConfig:
             base_url=raw.get("base_url") or None,
             temperature=float(raw.get("temperature", 0.3)),
             max_tokens=int(raw.get("max_tokens", 4096)),
+            commentary=bool(raw.get("commentary", True)),
         )
 
     def apply_overrides(
@@ -108,6 +110,7 @@ class AgentConfig:
         base_url: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        commentary: bool | None = None,
     ) -> None:
         """Apply CLI overrides on top of the YAML values for this session only.
 
@@ -133,6 +136,8 @@ class AgentConfig:
             self.temperature = temperature
         if max_tokens is not None:
             self.max_tokens = max_tokens
+        if commentary is not None:
+            self.commentary = commentary
 
 
 # ---------------------------------------------------------------------------
@@ -190,12 +195,30 @@ class StataContext:
 # ---------------------------------------------------------------------------
 # Agent factory
 # ---------------------------------------------------------------------------
+_SYSTEM_PROMPT_COMMENTARY_ON = (
+    "5. Always show the raw Stata output (tables, logs) first, then add a "
+    "   concise plain-language interpretation — explain what the results mean "
+    "   in context (e.g. number of observations, key variables, notable "
+    "   patterns). Keep commentary brief and factual."
+)
+_SYSTEM_PROMPT_COMMENTARY_OFF = (
+    "5. Return the raw Stata output only. Do NOT add unsolicited explanation "
+    "   or commentary after tool output. However, if the user explicitly asks "
+    "   you to interpret, explain, or summarize results (e.g. 'what does this "
+    "   mean?', 'explain this coefficient'), answer that question directly."
+)
+
+
 def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
     """Build and return a configured PydanticAI agent."""
     model = build_model(cfg)
     model_settings = ModelSettings(
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
+    )
+
+    commentary_instruction = (
+        _SYSTEM_PROMPT_COMMENTARY_ON if cfg.commentary else _SYSTEM_PROMPT_COMMENTARY_OFF
     )
 
     hf_agent: Agent[StataContext, str] = Agent(
@@ -212,8 +235,7 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
             "   cleaner output.\n"
             "4. Fall back to `run_stata` for commands not covered by the "
             "   structured tools (e.g. xtreg, margins, xtset).\n"
-            "5. Always show the raw Stata output (tables, logs) first, "
-            "   then add a brief interpretation only if it adds value.\n"
+            f"{commentary_instruction}\n"
             "6. If a command fails, read the error, fix it, and retry once. "
             "   If it fails again, tell the user clearly what went wrong."
         ),
@@ -376,6 +398,21 @@ def main() -> None:
         help="Override maximum tokens in the model response",
     )
 
+    commentary_group = parser.add_mutually_exclusive_group()
+    commentary_group.add_argument(
+        "--commentary",
+        dest="commentary",
+        action="store_true",
+        default=None,
+        help="Enable plain-language commentary after Stata output (default: on)",
+    )
+    commentary_group.add_argument(
+        "--no-commentary",
+        dest="commentary",
+        action="store_false",
+        help="Return raw Stata output only, no interpretation",
+    )
+
     args = parser.parse_args()
 
     # Handle Stata config reset before anything else
@@ -393,13 +430,16 @@ def main() -> None:
             base_url=args.base_url,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
+            commentary=args.commentary,
         )
     except (FileNotFoundError, ValueError, EnvironmentError) as e:
         print_error(e)
         sys.exit(1)
 
+    commentary_label = "on" if cfg.commentary else "off"
     print(
-        f"StataAgent ready  |  provider: {cfg.provider}  |  model: {cfg.model}\n"
+        f"StataAgent ready  |  provider: {cfg.provider}  |  model: {cfg.model}"
+        f"  |  commentary: {commentary_label}\n"
         "Type your question, or 'quit' to exit.\n"
     )
 

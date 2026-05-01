@@ -32,10 +32,18 @@ class StataContext:
 
 # The agent itself. 'claude-sonnet-4-5' is a reasonable default;
 # swap for any model PydanticAI supports.
-agent = Agent(
-    "anthropic:claude-sonnet-4-6",
-    deps_type=StataContext,
-    system_prompt=(
+def _build_system_prompt(commentary: bool = True) -> str:
+    commentary_instruction = (
+        "5. Always show the raw Stata output first, then add a concise "
+        "   plain-language interpretation — explain what the results mean "
+        "   in context. Keep commentary brief and factual."
+        if commentary else
+        "5. Return the raw Stata output only. Do NOT add unsolicited explanation "
+        "   or commentary after tool output. However, if the user explicitly asks "
+        "   you to interpret, explain, or summarize results (e.g. 'what does this "
+        "   mean?', 'explain this coefficient'), answer that question directly."
+    )
+    return (
         "You are StataAgent, an AI assistant that helps users analyze "
         "data in Stata. When a user asks a question:\n"
         "1. If no dataset is loaded, ask the user for a file path.\n"
@@ -44,11 +52,16 @@ agent = Agent(
         "   when possible. They are safer and produce cleaner output.\n"
         "4. Fall back to `run_stata` for commands not covered by the "
         "   structured tools.\n"
-        "5. Interpret the output for the user in plain language. "
-        "   Don't just dump the Stata log — explain what it means.\n"
+        f"{commentary_instruction}\n"
         "6. If a command fails, read the error, fix it, and retry once. "
         "   If it fails again, tell the user what went wrong."
-    ),
+    )
+
+
+agent = Agent(
+    "anthropic:claude-sonnet-4-6",
+    deps_type=StataContext,
+    system_prompt=_build_system_prompt(commentary=True),
 )
 
 
