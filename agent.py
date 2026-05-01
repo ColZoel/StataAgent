@@ -17,6 +17,13 @@ from stata_tools import (
     summarize,
     tabulate,
     regress,
+    gstats_tab,
+    gstats_sum,
+    gcollapse,
+    greshape,
+    gegen,
+    gquantiles,
+    gunique,
     run_raw_stata,
 )
 
@@ -54,7 +61,15 @@ def _build_system_prompt(commentary: bool = True) -> str:
         "   structured tools.\n"
         f"{commentary_instruction}\n"
         "6. If a command fails, read the error, fix it, and retry once. "
-        "   If it fails again, tell the user what went wrong."
+        "   If it fails again, tell the user what went wrong.\n"
+        "7. Use gcollapse, greshape, and gegen ONLY when the dataset has more than "
+        "   50 million observations (check the observation count shown by "
+        "   describe_dataset). For smaller datasets use native collapse/reshape/egen "
+        "   via run_stata.\n"
+        "8. Use gstats_tabstat or gstats_summarize instead of native tabstat/summarize, "
+        "   and use gquantiles instead of native pctile/xtile/_pctile, whenever the "
+        "   operation must be performed WITHIN by() groups. For ungrouped summary stats "
+        "   or quantiles, use the native commands via run_stata."
     )
 
 
@@ -139,6 +154,228 @@ def run_regression(
     if err := _require_dataset(ctx):
         return err
     result = regress(dependent, independents, robust, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def gstats_tabstat(
+    ctx: RunContext[StataContext],
+    varlist: str,
+    by: str | None = None,
+    statistics: str | None = None,
+    columns: str | None = None,
+    condition: str | None = None,
+) -> str:
+    """Summary statistics table via gstats tabstat. Use this instead of native
+    tabstat when the operation is performed within by() groups.
+
+    varlist: space-separated variable names.
+    by: grouping variable(s) — supports multiple variables, unlike native tabstat.
+    statistics: space-separated stat names, e.g. "mean sd min max p50".
+        Supported: mean, geomean, count, nmissing, nunique, median, sum, sd,
+        variance, cv, range, min, max, first, last, p1–p99, iqr, skewness,
+        kurtosis, gini, percent, and more.
+    columns: "stat" (default, columns = statistics) or "var" (columns = variables).
+    condition: optional if-expression, e.g. "year > 2000".
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = gstats_tab(varlist, by, statistics, columns, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def gstats_summarize(
+    ctx: RunContext[StataContext],
+    varlist: str,
+    by: str | None = None,
+    detail: bool = False,
+    meanonly: bool = False,
+    condition: str | None = None,
+) -> str:
+    """Descriptive statistics via gstats summarize. Use this instead of native
+    summarize when the operation is performed within by() groups.
+
+    varlist: space-separated variable names.
+    by: grouping variable(s).
+    detail: include percentiles, skewness, and kurtosis.
+    meanonly: compute only count, sum, mean, min, max (faster).
+    condition: optional if-expression.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = gstats_sum(varlist, by, detail, meanonly, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def collapse_dataset(
+    ctx: RunContext[StataContext],
+    clist: str,
+    by: str | None = None,
+    condition: str | None = None,
+    fast: bool = False,
+    merge: bool = False,
+    replace: bool = False,
+    freq: str | None = None,
+) -> str:
+    """Collapse dataset to group-level statistics via gcollapse.
+    ONLY use for datasets with more than 50 million observations;
+    for smaller data use run_stata with native collapse.
+
+    clist: Stata-style stat/variable specification, e.g.:
+        "(mean) income (sum) sales"
+        "(p50) wage_med=wage (sd) wage_sd=wage"
+    by: grouping variable(s).
+    fast: skip preserve/restore (safe in scripts).
+    merge: merge collapsed results back into the original dataset in memory.
+    replace: with merge=True, overwrite existing variables.
+    freq: variable name to store per-group observation count.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = gcollapse(clist, by, condition, fast, merge, replace, freq)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def reshape_dataset(
+    ctx: RunContext[StataContext],
+    direction: str,
+    varlist: str,
+    by: str | None = None,
+    keys: str | None = None,
+    values: str | None = None,
+    string: bool = False,
+    dropmiss: bool = False,
+    nochecks: bool = False,
+    condition: str | None = None,
+) -> str:
+    """Reshape dataset via greshape.
+    ONLY use for datasets with more than 50 million observations;
+    for smaller data use run_stata with native reshape.
+
+    direction: one of "long", "wide", "gather", "spread".
+        long/wide: mirror native reshape — use by for ID vars, keys for j variable.
+        gather: pivot multiple columns into key-value rows (tidyr-style).
+        spread: pivot key-value rows into columns (tidyr-style).
+    varlist: stub names (long/wide) or variable list (gather/spread).
+    by: ID variable(s) — required for long/wide.
+    keys: variable name for stub suffixes (long/wide) or key column (gather/spread).
+    values: values variable — required for gather.
+    string: allow string stub matching in long.
+    dropmiss: drop rows where all reshaped variables are missing.
+    nochecks: skip duplicate/missing checks (fastest, use in scripts).
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = greshape(direction, varlist, by, keys, values, string, dropmiss, nochecks, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def generate_group_var(
+    ctx: RunContext[StataContext],
+    newvar: str,
+    function: str,
+    expression: str,
+    by: str | None = None,
+    replace: bool = False,
+    condition: str | None = None,
+    extra_opts: str | None = None,
+) -> str:
+    """Generate a new variable using a gtools group function via gegen.
+    ONLY use for datasets with more than 50 million observations;
+    for smaller data use run_stata with native egen.
+
+    newvar: name for the new variable.
+    function: function to apply. Common choices:
+        mean, sum, sd, count, nunique, min, max, median, iqr,
+        pctile, first, last, firstnm, lastnm, tag, group, rank,
+        skewness, kurtosis, gini, percent, cumsum, demean, xtile.
+    expression: argument to the function, e.g. "income" or "industry occupation"
+        (for group/tag, pass the grouping variables as a space-separated string).
+    by: group variable(s) for within-group computation.
+    extra_opts: function-specific options as a string, e.g.:
+        "p(75)" for pctile, "missing" for group or tag, "n(3)" for select.
+    replace: overwrite newvar if it already exists.
+    condition: optional if-expression.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = gegen(newvar, function, expression, by, replace, condition, extra_opts)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def compute_quantiles(
+    ctx: RunContext[StataContext],
+    expression: str,
+    mode: str,
+    newvar: str | None = None,
+    nquantiles: int | None = None,
+    quantiles: str | None = None,
+    cutpoints: str | None = None,
+    by: str | None = None,
+    altdef: bool = False,
+    genp: str | None = None,
+    replace: bool = False,
+    strict: bool = False,
+    condition: str | None = None,
+) -> str:
+    """Compute quantiles, bin assignments, or percentile scalars via gquantiles.
+    Use this instead of native pctile/xtile/_pctile when the operation is
+    performed within by() groups.
+
+    expression: variable or Stata expression to quantile.
+    mode: "pctile"  — store quantile breakpoints in newvar.
+          "xtile"   — store bin assignments (1..nquantiles) in newvar.
+          "_pctile" — store results as r(r1), r(r2), … scalars (no newvar needed).
+    newvar: output variable name (required for pctile and xtile).
+    nquantiles: number of equal-sized groups (default 2 = median split).
+    quantiles: specific percentiles as a space-separated list, e.g. "10 25 50 75 90".
+    cutpoints: existing variable whose values define the cut boundaries.
+    by: group variable(s) — computes separate quantiles per group.
+    altdef: use alternative interpolation formula (cannot combine with weights).
+    genp: new variable to store the percentage associated with each pctile value.
+    replace: overwrite newvar if it already exists.
+    strict: with by(), skip groups with too few obs rather than erroring.
+    condition: optional if-expression.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = gquantiles(expression, mode, newvar, nquantiles, quantiles, cutpoints,
+                        by, altdef, genp, replace, strict, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def count_unique(
+    ctx: RunContext[StataContext],
+    varlist: str,
+    by: str | None = None,
+    generate: str | None = None,
+    replace: bool = False,
+    detail: bool = False,
+    missing: bool = False,
+    condition: str | None = None,
+) -> str:
+    """Count unique values of one or more variables using gunique (gtools).
+
+    Variables in varlist are evaluated jointly — e.g. 'a b' counts unique
+    combinations of a and b, not unique values of each separately.
+
+    by: group varlist; creates a per-observation variable tracking unique
+        counts within each group (default name _Unique).
+    generate: alternative variable name for the by() result.
+    replace: overwrite the generate variable if it already exists.
+    detail: report summary statistics on group sizes.
+    missing: treat missing values as a distinct unique value.
+    condition: optional 'if' expression, e.g. 'age > 25'.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = gunique(varlist, by, generate, replace, detail, missing, condition)
     return result.output if result.success else f"Error: {result.error}"
 
 
