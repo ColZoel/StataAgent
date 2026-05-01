@@ -57,8 +57,23 @@ def _run(code: str) -> StataResult:
         return StataResult(success=False, output=py_output, error=str(e))
 
 
+_SYSUSE_DATASETS = {
+    "auto", "auto2", "bplong", "bpwide", "cancer", "census", "citytemp",
+    "citytemp4", "educ99gdp", "exam", "gnp96", "lifeexp", "nlsw88",
+    "nlswide1", "pop2000", "sandstone", "sp500", "surface", "tsline1",
+    "tsline2", "urates", "uslifeexp", "uslifeexp2", "voter", "xtline1",
+}
+
+
 def load_dataset(path: str) -> StataResult:
-    """Load a .dta file into Stata's memory."""
+    """Load a dataset into Stata's memory.
+
+    Recognizes Stata's built-in example datasets (e.g. 'auto') and uses
+    sysuse; otherwise treats path as a .dta file path and uses use.
+    """
+    name = path.strip().lower().removesuffix(".dta")
+    if name in _SYSUSE_DATASETS:
+        return _run(f"sysuse {name}, clear")
     return _run(f'use "{path}", clear')
 
 
