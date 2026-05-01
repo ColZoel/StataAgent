@@ -56,7 +56,7 @@ api_key_env: HF_TOKEN
 # Leave null to use the provider's default endpoint.
 # Required only for provider: openai_compatible.
 # Example: "https://my-vllm-server.internal/v1"
-base_url: None
+base_url: null
 
 # ---------------------------------------------------------------------------
 # Generation parameters
