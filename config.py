@@ -344,4 +344,4 @@ def initialize_pystata(*, reset: bool = False) -> None:
     sys.path.insert(0, str(install.path))
 
     from pystata import config as _pystata_config  # noqa: PLC0415
-    _pystata_config.init(install.edition)
+    _pystata_config.init(install.edition, splash=False)

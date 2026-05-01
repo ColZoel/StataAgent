@@ -12,7 +12,7 @@
 #   groq              — Groq         (https://console.groq.com)
 #   ollama            — Ollama local server (no API key needed)
 #   openai_compatible — Any other OpenAI-compatible endpoint; set base_url below
-provider: openai_compatible
+provider: huggingface
 
 # ---------------------------------------------------------------------------
 # Model
@@ -33,7 +33,7 @@ provider: openai_compatible
 #
 # LiteLLM model string sent to the API: "<litellm_prefix>/<model>"
 #   e.g. provider=groq + model=llama3-8b-8192 → "groq/llama3-8b-8192"
-model: mistralai/Mistral-7B-Instruct-v0.3  # model name sent in the request body
+model: sambanova/meta-llama/Llama-3.3-70B-Instruct  # model name sent in the request body
 
 # ---------------------------------------------------------------------------
 # Authentication
@@ -56,10 +56,19 @@ api_key_env: HF_TOKEN
 # Leave null to use the provider's default endpoint.
 # Required only for provider: openai_compatible.
 # Example: "https://my-vllm-server.internal/v1"
-base_url: None
+base_url: null
 
 # ---------------------------------------------------------------------------
 # Generation parameters
 # ---------------------------------------------------------------------------
 temperature: 0.3      # lower = more deterministic; good for data analysis
 max_tokens: 4096      # maximum tokens in the model's response
+
+# ---------------------------------------------------------------------------
+# Commentary
+# ---------------------------------------------------------------------------
+# When true (default), the model explains results in plain language after
+# showing the raw Stata output.
+# When false, the model returns only the raw Stata output with no prose.
+# Can be toggled per-session with --no-commentary / --commentary CLI flags.
+commentary: false

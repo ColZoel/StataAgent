@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -36,6 +36,7 @@ from error_handler import print_error
 from stata_tools import (
     StataResult,
     describe_data,
+    get_varnames,
     load_dataset,
     regress,
     run_raw_stata,
@@ -70,6 +71,7 @@ class AgentConfig:
     base_url: str | None
     temperature: float
     max_tokens: int
+    commentary: bool = True
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.yaml") -> "AgentConfig":
@@ -97,6 +99,7 @@ class AgentConfig:
             base_url=raw.get("base_url") or None,
             temperature=float(raw.get("temperature", 0.3)),
             max_tokens=int(raw.get("max_tokens", 4096)),
+            commentary=bool(raw.get("commentary", True)),
         )
 
     def apply_overrides(
@@ -108,6 +111,7 @@ class AgentConfig:
         base_url: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        commentary: bool | None = None,
     ) -> None:
         """Apply CLI overrides on top of the YAML values for this session only.
 
@@ -133,6 +137,8 @@ class AgentConfig:
             self.temperature = temperature
         if max_tokens is not None:
             self.max_tokens = max_tokens
+        if commentary is not None:
+            self.commentary = commentary
 
 
 # ---------------------------------------------------------------------------
@@ -185,17 +191,36 @@ class StataContext:
     """Tracks dataset state across tool calls."""
     dataset_loaded: bool = False
     dataset_path: str | None = None
+    varnames: set[str] = field(default_factory=set)
 
 
 # ---------------------------------------------------------------------------
 # Agent factory
 # ---------------------------------------------------------------------------
+_SYSTEM_PROMPT_COMMENTARY_ON = (
+    "5. Always show the raw Stata output (tables, logs) first, then add a "
+    "   concise plain-language interpretation — explain what the results mean "
+    "   in context (e.g. number of observations, key variables, notable "
+    "   patterns). Keep commentary brief and factual."
+)
+_SYSTEM_PROMPT_COMMENTARY_OFF = (
+    "5. Return the raw Stata output only. Do NOT add unsolicited explanation "
+    "   or commentary after tool output. However, if the user explicitly asks "
+    "   you to interpret, explain, or summarize results (e.g. 'what does this "
+    "   mean?', 'explain this coefficient'), answer that question directly."
+)
+
+
 def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
     """Build and return a configured PydanticAI agent."""
     model = build_model(cfg)
     model_settings = ModelSettings(
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
+    )
+
+    commentary_instruction = (
+        _SYSTEM_PROMPT_COMMENTARY_ON if cfg.commentary else _SYSTEM_PROMPT_COMMENTARY_OFF
     )
 
     hf_agent: Agent[StataContext, str] = Agent(
@@ -212,8 +237,7 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
             "   cleaner output.\n"
             "4. Fall back to `run_stata` for commands not covered by the "
             "   structured tools (e.g. xtreg, margins, xtset).\n"
-            "5. Interpret the output for the user in plain language. "
-            "   Don't just dump the Stata log — explain what it means.\n"
+            f"{commentary_instruction}\n"
             "6. If a command fails, read the error, fix it, and retry once. "
             "   If it fails again, tell the user clearly what went wrong."
         ),
@@ -229,6 +253,27 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
             )
         return None
 
+    def _check_vars(ctx: RunContext[StataContext], *varnames: str | None) -> str | None:
+        """Return an error string if any variable name is not in the dataset.
+
+        Catches hallucinated variable names before Stata runs, so the agent
+        gets a clear correction rather than a cryptic Stata error.
+        Unknown names are reported with the full variable list so the model
+        can self-correct on its next attempt.
+        """
+        known = ctx.deps.varnames
+        if not known:
+            return None  # varnames not yet populated; let Stata catch it
+        bad = [v for v in varnames if v and v not in known]
+        if not bad:
+            return None
+        bad_str = ", ".join(f"'{v}'" for v in bad)
+        known_str = ", ".join(sorted(known))
+        return (
+            f"Variable(s) {bad_str} not found in the loaded dataset. "
+            f"Available variables: {known_str}"
+        )
+
     # --- tool registrations ------------------------------------------------
 
     @hf_agent.tool
@@ -238,6 +283,7 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         if result.success:
             ctx.deps.dataset_loaded = True
             ctx.deps.dataset_path = path
+            ctx.deps.varnames = set(get_varnames())
             return f"Dataset loaded from {path}.\n{result.output}"
         return f"Failed to load: {result.error}"
 
@@ -247,6 +293,8 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         Call this early to understand what's available."""
         if err := _require_dataset(ctx):
             return err
+        # Refresh varnames in case the dataset changed since load.
+        ctx.deps.varnames = set(get_varnames())
         result = describe_data()
         return result.output if result.success else f"Error: {result.error}"
 
@@ -261,6 +309,9 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         for percentiles and skewness."""
         if err := _require_dataset(ctx):
             return err
+        if varlist:
+            if err := _check_vars(ctx, *varlist.split()):
+                return err
         result = summarize(varlist, detail)
         return result.output if result.success else f"Error: {result.error}"
 
@@ -272,6 +323,8 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
     ) -> str:
         """Frequency table for one variable, or cross-tab for two variables."""
         if err := _require_dataset(ctx):
+            return err
+        if err := _check_vars(ctx, var1, var2):
             return err
         result = tabulate(var1, var2)
         return result.output if result.success else f"Error: {result.error}"
@@ -288,6 +341,8 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
         (e.g. 'age > 25'). Set robust=True for heteroskedasticity-robust SEs."""
         if err := _require_dataset(ctx):
             return err
+        if err := _check_vars(ctx, dependent, *independents):
+            return err
         result = regress(dependent, independents, robust, condition)
         return result.output if result.success else f"Error: {result.error}"
 
@@ -295,7 +350,10 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
     def run_stata(ctx: RunContext[StataContext], code: str) -> str:
         """Execute arbitrary Stata code. Use this ONLY when the structured
         tools above don't cover your need (e.g. xtreg, margins, xtset,
-        user-contributed commands). Prefer structured tools whenever possible."""
+        correlate, user-contributed commands).
+        DO NOT use for: regress/regression → use run_regression instead;
+        summarize/describe → use summarize_vars/describe_dataset;
+        tabulate → use tabulate_vars."""
         if err := _require_dataset(ctx):
             return err
         result = run_raw_stata(code)
@@ -376,6 +434,21 @@ def main() -> None:
         help="Override maximum tokens in the model response",
     )
 
+    commentary_group = parser.add_mutually_exclusive_group()
+    commentary_group.add_argument(
+        "--commentary",
+        dest="commentary",
+        action="store_true",
+        default=None,
+        help="Enable plain-language commentary after Stata output (default: on)",
+    )
+    commentary_group.add_argument(
+        "--no-commentary",
+        dest="commentary",
+        action="store_false",
+        help="Return raw Stata output only, no interpretation",
+    )
+
     args = parser.parse_args()
 
     # Handle Stata config reset before anything else
@@ -393,13 +466,16 @@ def main() -> None:
             base_url=args.base_url,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
+            commentary=args.commentary,
         )
     except (FileNotFoundError, ValueError, EnvironmentError) as e:
         print_error(e)
         sys.exit(1)
 
+    commentary_label = "on" if cfg.commentary else "off"
     print(
-        f"StataAgent ready  |  provider: {cfg.provider}  |  model: {cfg.model}\n"
+        f"StataAgent ready  |  provider: {cfg.provider}  |  model: {cfg.model}"
+        f"  |  commentary: {commentary_label}\n"
         "Type your question, or 'quit' to exit.\n"
     )
 
@@ -422,7 +498,7 @@ def main() -> None:
         try:
             result = agent.run_sync(query, deps=ctx, message_history=history)
             history = result.all_messages()
-            print(f"\n{result.data}\n")
+            print(f"\n{result.output}\n")
         except Exception as exc:
             print_error(exc)
             print()
