@@ -1,28 +1,61 @@
 # StataAgent
 
-StataAgent is an AI-powered agent designed for intuitive, question-based data exploration and analysis directly within Stata. Built upon the smolagents framework, StataAgent interprets both simple Stata commands and more complex analytical questions, converting them into executable Stata code. With an integrated understanding of dataset metadata—including variable names and labels—StataAgent streamlines analytical workflows, making data exploration seamless and efficient.
+> **Beta v0.0.1** — experimental; interfaces and behavior may change without notice.
+
+StataAgent is an AI-powered agent for interactive data exploration and analysis directly within Stata. Built on [pydantic-ai](https://github.com/pydantic/pydantic-ai) and LiteLLM, it interprets natural-language questions and Stata commands, converts them into executable Stata code, and returns results in your terminal.
 
 ---
 
+## Compatibility
 
-***As of 11 March 2025: this is an experimental project***
+| Component | Requirement |
+|-----------|-------------|
+| **Stata** | **17 or newer** (requires `pystata`, which ships with Stata 17+) |
+| **Python** | 3.10 or newer |
+| **pydantic-ai** | ≥ 1.87.0 |
+| **pydantic-ai-litellm** | latest (installed alongside pydantic-ai) |
 
+> **Stata 16 and earlier are not supported.** `pystata` — the Python API used to execute Stata commands — was introduced in Stata 17 and is not available for earlier versions.
+
+---
+
+## Model / Provider Caution
+
+> **Not all inference providers work reliably with this tool.**
+>
+> StataAgent requires a model that supports structured tool-calling (function calling). Many free-tier and serverless inference endpoints either do not implement the tool-calling protocol correctly or apply aggressive rate limits that break multi-step agentic loops.
+>
+> **The only provider found to be consistently usable so far is [Nscale](https://nscale.com) via an OpenAI-compatible endpoint.** Other providers (HuggingFace Serverless, SambaNova free tier, etc.) have caused tool-call parsing failures or silent response truncation during testing.
+>
+> If you use a different provider, confirm it supports OpenAI-style function calling and has sufficient token limits (≥ 4 096 output tokens). Commercial providers like Together AI, Fireworks, and Groq are more likely to work than free-tier serverless endpoints, but have not been systematically tested.
+
+### Recommended config (Nscale / OpenAI-compatible)
+
+```yaml
+# config.yaml
+provider: openai_compatible
+model: <nscale-model-id>          # e.g. meta-llama/Llama-3.3-70B-Instruct
+base_url: https://inference.nscale.com/v1
+api_key_env: NSCALE_API_KEY
+temperature: 0.3
+max_tokens: 4096
+commentary: false
+```
+
+```bash
+export NSCALE_API_KEY=<your-key>
+```
+
+---
 
 ## Features
 
-- **Natural Language Queries:**
-  - Easily handle questions like:
-    - "What is the effect of x1 on y, controlling for x2?"
-    - "What is the distribution of homeowners over time?"
-
-- **Command Execution:**
-  - Directly execute straightforward Stata commands like `regress y on x1 and x2`.
-
-- **Metadata Integration:**
-  - Automatically leverages dataset metadata to accurately interpret questions and commands.
-
-- **Powered by smolagents:**
-  - Robust AI framework optimized for minimal overhead and maximal efficiency.
+- **Natural language queries** — ask questions in plain English; StataAgent maps them to Stata commands.
+- **Structured tools** — dedicated wrappers for `summarize`, `tabulate`, `regress`, and `describe` produce clean, predictable output.
+- **Escape hatch** — `run_stata` executes arbitrary Stata code for commands not covered by the structured tools (`xtreg`, `margins`, `xtset`, etc.).
+- **Metadata awareness** — variable names and labels are loaded at startup so the model can reference them without hallucinating names.
+- **Multi-turn history** — conversation context is preserved across queries within a session.
+- **Commentary toggle** — `--commentary` / `--no-commentary` controls whether the model adds plain-language interpretation after raw Stata output.
 
 ---
 
@@ -30,99 +63,145 @@ StataAgent is an AI-powered agent designed for intuitive, question-based data ex
 
 ### Prerequisites
 
-- Stata (version 15 or newer recommended)
-- Python 3.7 or newer
-- Hugging Face `transformers` library and API key
+- Stata 17+ (with `pystata` available — it ships with the Stata installation)
+- Python 3.10+
+- An API key for your chosen inference provider
 
 ### Setup
-Clone this repository and navigate to the project directory:
 
 ```bash
-git clone https://github.com/yourusername/StataAgent.git
+git clone https://github.com/ColZoel/StataAgent.git
 cd StataAgent
-```
 
-Set up a Python virtual environment (recommended):
-
-```bash
 python -m venv venv
-source venv/bin/activate  # or on Windows: venv\Scripts\activate
-```
+source venv/bin/activate        # Windows: venv\Scripts\activate
 
-Install required Python packages:
-
-```bash
 pip install -r requirements.txt
 ```
 
-Ensure `smolagents` is properly installed and configured per [smolagents documentation](https://github.com/smol-ai/smolagents).
+Copy and edit the config:
+
+```bash
+cp config.yaml my_config.yaml   # optional — edit in place if you prefer
+```
+
+Set your API key:
+
+```bash
+export NSCALE_API_KEY=<your-key>   # or whichever variable api_key_env points to
+```
 
 ---
 
 ## Usage
 
-Launch StataAgent with:
-
 ```bash
 python main.py
+# or, with overrides:
+python hf_agent.py --config my_config.yaml
+python hf_agent.py --provider openai_compatible --base-url https://inference.nscale.com/v1 --model meta-llama/Llama-3.3-70B-Instruct
+python hf_agent.py --no-commentary
+python hf_agent.py --temperature 0.1 --max-tokens 2048
 ```
 
-Once running, interact with the agent using plain English queries or standard Stata commands.
+Once running, type queries at the `>` prompt. Type `quit` or `exit` to end the session.
 
-### Examples
+---
 
-**Natural Language Query:**
+## Examples
+
+### Load a dataset and describe it
 
 ```
-What is the effect of education on wages, controlling for experience and gender?
+> load /path/to/data.dta and describe it
 ```
 
-**Internally executed Stata Command:**
+StataAgent calls `load_data` then `describe_dataset` and returns the variable list with types and labels.
+
+### Descriptive statistics
+
+```
+> Summarize the wage and education variables
+```
+
+Internally executes:
+
+```stata
+summarize wage education
+```
+
+### Regression
+
+```
+> What is the effect of education on wages, controlling for experience and gender?
+```
+
+Internally executes:
 
 ```stata
 regress wage education experience gender
 ```
 
-**Natural Language Query:**
+### Cross-tabulation
 
 ```
-What is the distribution of homeowners by year?
+> Show the distribution of homeownership by year
 ```
 
-**Internally Executed Stata Command:**
+Internally executes:
 
 ```stata
-tab homeowners year
+tabulate homeown year
 ```
 
-The results of the executed command will be displayed in the console.
+### Arbitrary Stata command
 
+```
+> Run a fixed-effects regression of wage on education, with individual fixed effects (id) and year fixed effects
+```
 
+Internally executes (via `run_stata`):
 
-** Note: As of now there is no way to retain data in memory, so each query loads the data from disk.
-As this is not computationally efficient, StataAgent is not recommended for datasets >100,000 observations.
+```stata
+xtset id year
+xtreg wage education i.year, fe robust
+```
+
+### CLI flag examples
+
+```bash
+# Start with commentary disabled (raw Stata output only)
+python hf_agent.py --no-commentary
+
+# Override model without editing config.yaml
+python hf_agent.py --provider openai_compatible \
+  --base-url https://inference.nscale.com/v1 \
+  --model meta-llama/Llama-3.3-70B-Instruct
+
+# Reset saved Stata installation config and re-run discovery
+python hf_agent.py --reset
+```
+
+---
+
+## Notes
+
+- Each session re-loads the dataset from disk when `load_data` is called. There is no in-memory persistence across sessions, so StataAgent is not recommended for datasets above roughly 100 000 observations.
+- `pystata` must be importable from your Python environment. If it is not found, verify that your `PYTHONPATH` includes the `utilities/python` directory inside your Stata installation.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please:
-
 1. Fork this repository.
 2. Create a feature branch (`git checkout -b feature/your-feature`).
 3. Commit your changes (`git commit -am 'Add feature'`).
-4. Push to the branch (`git push origin feature/your-feature`).
-5. Submit a Pull Request.
+4. Push and open a Pull Request.
 
 ---
-
 
 ## Acknowledgments
 
-- [smolagents](https://github.com/smol-ai/smolagents): Lightweight AI agent framework.
-- StataCorp for providing robust statistical analysis software.
-
----
-
-**Happy exploring with StataAgent!**
-
+- [pydantic-ai](https://github.com/pydantic/pydantic-ai) — typed AI agent framework
+- [LiteLLM](https://github.com/BerriAI/litellm) — unified LLM provider backend
+- StataCorp for `pystata` and the Stata platform
