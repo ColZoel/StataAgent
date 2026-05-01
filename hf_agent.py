@@ -32,6 +32,7 @@ from pydantic_ai.messages import ModelMessage
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai_litellm import LiteLLMModel
 
+from error_handler import print_error
 from stata_tools import (
     StataResult,
     describe_data,
@@ -394,7 +395,7 @@ def main() -> None:
             max_tokens=args.max_tokens,
         )
     except (FileNotFoundError, ValueError, EnvironmentError) as e:
-        print(f"Configuration error: {e}", file=sys.stderr)
+        print_error(e)
         sys.exit(1)
 
     print(
@@ -418,9 +419,13 @@ def main() -> None:
         if not query:
             continue
 
-        result = agent.run_sync(query, deps=ctx, message_history=history)
-        history = result.all_messages()
-        print(f"\n{result.data}\n")
+        try:
+            result = agent.run_sync(query, deps=ctx, message_history=history)
+            history = result.all_messages()
+            print(f"\n{result.data}\n")
+        except Exception as exc:
+            print_error(exc)
+            print()
 
 
 if __name__ == "__main__":

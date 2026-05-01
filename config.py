@@ -86,30 +86,47 @@ def _is_valid_stata_path(path: Path) -> bool:
 
 
 def _infer_edition(path: Path) -> str | None:
-    """Guess the Stata edition from directory name components.
+    """Guess the Stata edition from the path name, then from executables inside.
 
-    Checks each part of the path for edition tokens (case-insensitive).
-    StataNow variants are checked before plain Stata variants so that
-    e.g. 'StataNowMP' matches 'mp' and not an ambiguous partial token.
-    Returns None when the path gives no edition signal
-    (e.g. '/Applications/Stata/utilities' or 'StataNow/utilities').
+    Two-pass strategy:
+      1. Check each path component for edition tokens in the folder name
+         (e.g. 'StataMP', 'StataNowSE').  StataNow variants are tested
+         first so 'StataNowMP' binds to 'mp' before the generic 'Stata' test.
+      2. If the folder name gives no signal (e.g. 'StataNow', 'Stata19'),
+         scan the install directory (parent of utilities/) for an executable
+         whose name contains an edition token — e.g. 'StataMP-64.app' → 'mp'.
+
+    Returns None only when both passes fail.
     """
     for part in path.parts:
         upper = part.upper()
-        # StataNow edition-specific (check before plain Stata variants)
         if "STATANOWMP" in upper:
             return "mp"
         if "STATANOWSE" in upper:
             return "se"
         if "STATANOWBE" in upper:
             return "be"
-        # Plain Stata edition-specific
         if "STATAMP" in upper:
             return "mp"
         if "STATASE" in upper:
             return "se"
         if "STATABE" in upper:
             return "be"
+
+    # Folder name gave no edition — scan the install directory for executables.
+    install_dir = path.parent  # e.g. /Applications/StataNow
+    try:
+        for entry in install_dir.iterdir():
+            upper = entry.name.upper()
+            if "STATAMP" in upper:
+                return "mp"
+            if "STATASE" in upper:
+                return "se"
+            if "STATABE" in upper:
+                return "be"
+    except OSError:
+        pass
+
     return None
 
 
