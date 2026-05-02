@@ -19,15 +19,21 @@ Usage (REPL):
 """
 from __future__ import annotations
 
+from __init__ import __version__
+
 import argparse
 import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pyfiglet
 import yaml
 from dotenv import load_dotenv
 from pydantic_ai import Agent, RunContext
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai_litellm import LiteLLMModel
@@ -365,6 +371,50 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
 
 
 # ---------------------------------------------------------------------------
+# Rich console (shared)
+# ---------------------------------------------------------------------------
+console = Console()
+
+
+# ---------------------------------------------------------------------------
+# Splash screen
+# ---------------------------------------------------------------------------
+def display_splash(cfg: AgentConfig) -> None:
+    """Print the StataAgent banner and status table."""
+    from config import find_stata
+
+    try:
+        stata_install = find_stata()
+        stata_edition = f"Stata {stata_install.edition.upper()}"
+    except Exception:
+        stata_edition = "Stata (unknown edition)"
+
+    ascii_art = pyfiglet.figlet_format("StataAgent", font="slant")
+
+    console.print(Panel(
+        ascii_art.rstrip(),
+        subtitle=f"AI-Powered Stata  •  v{__version__}",
+        style="bold #0071bc",
+        expand=False,
+    ))
+
+    commentary_label = "on" if cfg.commentary else "off"
+
+    status_table = Table(show_header=False, box=None, padding=(0, 1))
+    status_table.add_row("[bold]Stata:[/bold]",      f"[green]{stata_edition}[/green]")
+    status_table.add_row("[bold]Provider:[/bold]",   cfg.provider)
+    status_table.add_row("[bold]Model:[/bold]",      cfg.model)
+    status_table.add_row("[bold]Commentary:[/bold]", commentary_label)
+    status_table.add_row(
+        "[bold]GitHub:[/bold]",
+        "[link=https://github.com/ColZoel/StataAgent]StataAgent[/link]",
+    )
+
+    console.print(status_table)
+    console.rule(style="#0071bc")
+
+
+# ---------------------------------------------------------------------------
 # REPL entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -472,12 +522,8 @@ def main() -> None:
         print_error(e)
         sys.exit(1)
 
-    commentary_label = "on" if cfg.commentary else "off"
-    print(
-        f"StataAgent ready  |  provider: {cfg.provider}  |  model: {cfg.model}"
-        f"  |  commentary: {commentary_label}\n"
-        "Type your question, or 'quit' to exit.\n"
-    )
+    display_splash(cfg)
+    console.print("Type your question, or [bold]quit[/bold] to exit.\n")
 
     agent = build_agent(cfg)
     ctx = StataContext()

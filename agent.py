@@ -17,6 +17,9 @@ from stata_tools import (
     summarize,
     tabulate,
     regress,
+    collapse,
+    reshape,
+    egen,
     gstats_tab,
     gstats_sum,
     gcollapse,
@@ -62,10 +65,10 @@ def _build_system_prompt(commentary: bool = True) -> str:
         f"{commentary_instruction}\n"
         "6. If a command fails, read the error, fix it, and retry once. "
         "   If it fails again, tell the user what went wrong.\n"
-        "7. Use gcollapse, greshape, and gegen ONLY when the dataset has more than "
-        "   50 million observations (check the observation count shown by "
-        "   describe_dataset). For smaller datasets use native collapse/reshape/egen "
-        "   via run_stata.\n"
+        "7. Use collapse_dataset, reshape_dataset, and generate_group_var (native Stata) "
+        "   by default. Switch to gcollapse_dataset, greshape_dataset, or gegen_var "
+        "   ONLY when the dataset has more than 50 million observations (check the "
+        "   observation count shown by describe_dataset).\n"
         "8. Use gstats_tabstat or gstats_summarize instead of native tabstat/summarize, "
         "   and use gquantiles instead of native pctile/xtile/_pctile, whenever the "
         "   operation must be performed WITHIN by() groups. For ungrouped summary stats "
@@ -214,18 +217,45 @@ def collapse_dataset(
     clist: str,
     by: str | None = None,
     condition: str | None = None,
+    cw: bool = False,
+    fast: bool = False,
+) -> str:
+    """Collapse dataset to group-level statistics (native Stata collapse).
+    Default collapse tool — use for any dataset under 50 million observations.
+    For N > 50M use gcollapse_dataset instead.
+
+    clist: stat/variable specification, e.g.:
+        "(mean) income (sum) sales"
+        "(p50) wage_med=wage (sd) wage_sd=wage"
+    by: grouping variable(s).
+    cw: casewise deletion — drop observations missing any variable in clist.
+    fast: skip preserve/restore (safe in scripts).
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = collapse(clist, by, condition, cw, fast)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def gcollapse_dataset(
+    ctx: RunContext[StataContext],
+    clist: str,
+    by: str | None = None,
+    condition: str | None = None,
     fast: bool = False,
     merge: bool = False,
     replace: bool = False,
     freq: str | None = None,
 ) -> str:
-    """Collapse dataset to group-level statistics via gcollapse.
-    ONLY use for datasets with more than 50 million observations;
-    for smaller data use run_stata with native collapse.
+    """Collapse dataset to group-level statistics via gcollapse (gtools).
+    ONLY use when N > 50 million observations; otherwise use collapse_dataset.
 
     clist: Stata-style stat/variable specification, e.g.:
         "(mean) income (sum) sales"
         "(p50) wage_med=wage (sd) wage_sd=wage"
+    Supports all native collapse stats plus: geomean, nunique, cv, gini,
+    skewness, kurtosis, select#, and more.
     by: grouping variable(s).
     fast: skip preserve/restore (safe in scripts).
     merge: merge collapsed results back into the original dataset in memory.
@@ -242,6 +272,33 @@ def collapse_dataset(
 def reshape_dataset(
     ctx: RunContext[StataContext],
     direction: str,
+    stubnames: str,
+    i: str,
+    j: str | None = None,
+    string: bool = False,
+    condition: str | None = None,
+) -> str:
+    """Reshape dataset between wide and long (native Stata reshape).
+    Default reshape tool — use for any dataset under 50 million observations.
+    For N > 50M use greshape_dataset instead.
+
+    direction: "long" or "wide".
+    stubnames: stub variable names, e.g. "inc wage" or "x".
+    i: ID variable(s) that uniquely identify observations.
+    j: variable whose values label the wide columns (required for wide;
+       optional for long — defaults to "j").
+    string: allow string values in j (long only).
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = reshape(direction, stubnames, i, j, string, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def greshape_dataset(
+    ctx: RunContext[StataContext],
+    direction: str,
     varlist: str,
     by: str | None = None,
     keys: str | None = None,
@@ -251,21 +308,20 @@ def reshape_dataset(
     nochecks: bool = False,
     condition: str | None = None,
 ) -> str:
-    """Reshape dataset via greshape.
-    ONLY use for datasets with more than 50 million observations;
-    for smaller data use run_stata with native reshape.
+    """Reshape dataset via greshape (gtools).
+    ONLY use when N > 50 million observations; otherwise use reshape_dataset.
 
-    direction: one of "long", "wide", "gather", "spread".
-        long/wide: mirror native reshape — use by for ID vars, keys for j variable.
+    direction: "long", "wide", "gather", or "spread".
+        long/wide: mirror native reshape syntax.
         gather: pivot multiple columns into key-value rows (tidyr-style).
         spread: pivot key-value rows into columns (tidyr-style).
     varlist: stub names (long/wide) or variable list (gather/spread).
     by: ID variable(s) — required for long/wide.
-    keys: variable name for stub suffixes (long/wide) or key column (gather/spread).
+    keys: variable for stub suffixes (long/wide) or key column (gather/spread).
     values: values variable — required for gather.
     string: allow string stub matching in long.
     dropmiss: drop rows where all reshaped variables are missing.
-    nochecks: skip duplicate/missing checks (fastest, use in scripts).
+    nochecks: skip duplicate/missing checks and sorting (fastest).
     """
     if err := _require_dataset(ctx):
         return err
@@ -284,20 +340,48 @@ def generate_group_var(
     condition: str | None = None,
     extra_opts: str | None = None,
 ) -> str:
-    """Generate a new variable using a gtools group function via gegen.
-    ONLY use for datasets with more than 50 million observations;
-    for smaller data use run_stata with native egen.
+    """Generate a new variable using native Stata egen.
+    Default tool for group variable generation — use for any dataset under
+    50 million observations. For N > 50M use gegen_var instead.
 
     newvar: name for the new variable.
-    function: function to apply. Common choices:
-        mean, sum, sd, count, nunique, min, max, median, iqr,
-        pctile, first, last, firstnm, lastnm, tag, group, rank,
-        skewness, kurtosis, gini, percent, cumsum, demean, xtile.
+    function: e.g. mean, sum, sd, count, min, max, median, iqr, pctile,
+        first, last, tag, group, rank, rowmean, rowmax, rowmin, rowtotal.
     expression: argument to the function, e.g. "income" or "industry occupation"
         (for group/tag, pass the grouping variables as a space-separated string).
     by: group variable(s) for within-group computation.
-    extra_opts: function-specific options as a string, e.g.:
-        "p(75)" for pctile, "missing" for group or tag, "n(3)" for select.
+    extra_opts: function-specific options, e.g. "p(75)" for pctile.
+    replace: overwrite newvar if it already exists.
+    condition: optional if-expression.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = egen(newvar, function, expression, by, replace, condition, extra_opts)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def gegen_var(
+    ctx: RunContext[StataContext],
+    newvar: str,
+    function: str,
+    expression: str,
+    by: str | None = None,
+    replace: bool = False,
+    condition: str | None = None,
+    extra_opts: str | None = None,
+) -> str:
+    """Generate a new variable using gegen (gtools).
+    ONLY use when N > 50 million observations; otherwise use generate_group_var.
+
+    newvar: name for the new variable.
+    function: all native egen functions are supported, plus gtools extras:
+        nunique, geomean, variance, cv, skewness, kurtosis, gini, percent,
+        cumsum, demean, demedian, xtile, rank, winsor, moving_stat, range_stat.
+    expression: argument to the function.
+    by: group variable(s) for within-group computation.
+    extra_opts: function-specific options, e.g. "p(75)" for pctile,
+        "missing" for group or tag, "n(3)" for select.
     replace: overwrite newvar if it already exists.
     condition: optional if-expression.
     """

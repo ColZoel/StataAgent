@@ -129,6 +129,64 @@ def regress(
     return _run(code)
 
 
+def collapse(
+    clist: str,
+    by: str | None = None,
+    condition: str | None = None,
+    cw: bool = False,
+    fast: bool = False,
+) -> StataResult:
+    """Collapse dataset to group-level statistics (native Stata collapse).
+
+    clist: stat/variable specification, e.g. "(mean) income (sum) sales".
+    by: grouping variable(s).
+    cw: casewise deletion — drop observations missing any variable.
+    fast: skip preserve/restore (safe in scripts).
+    """
+    code = f"collapse {clist}"
+    if condition:
+        code += f" if {condition}"
+    opts = []
+    if by:
+        opts.append(f"by({by})")
+    if cw:
+        opts.append("cw")
+    if fast:
+        opts.append("fast")
+    if opts:
+        code += ", " + " ".join(opts)
+    return _run(code)
+
+
+def reshape(
+    direction: str,
+    stubnames: str,
+    i: str,
+    j: str | None = None,
+    string: bool = False,
+    condition: str | None = None,
+) -> StataResult:
+    """Reshape dataset between wide and long (native Stata reshape).
+
+    direction: "long" or "wide".
+    stubnames: stub variable names, e.g. "inc wage" or "x".
+    i: ID variable(s) that uniquely identify observations.
+    j: variable whose values label the wide columns (required for wide;
+       optional for long — defaults to "j").
+    string: allow string values in j (long only).
+    """
+    code = f"reshape {direction} {stubnames}, i({i})"
+    if j:
+        code += f" j({j})"
+        if string:
+            code += " string"
+    if condition:
+        code = f"reshape {direction} {stubnames} if {condition}, i({i})"
+        if j:
+            code += f" j({j})"
+    return _run(code)
+
+
 def gstats_tab(
     varlist: str,
     by: str | None = None,
@@ -261,6 +319,38 @@ def greshape(
         opts.append("dropmiss")
     if nochecks:
         opts.append("nochecks")
+    if opts:
+        code += ", " + " ".join(opts)
+    return _run(code)
+
+
+def egen(
+    newvar: str,
+    function: str,
+    expression: str,
+    by: str | None = None,
+    replace: bool = False,
+    condition: str | None = None,
+    extra_opts: str | None = None,
+) -> StataResult:
+    """Generate a variable using a native Stata egen function.
+
+    function: e.g. "mean", "sum", "sd", "count", "min", "max", "tag",
+        "group", "rank", "pctile", "median", "iqr", "first", "last".
+    expression: argument to the function.
+    by: group variable(s).
+    extra_opts: function-specific options, e.g. "p(75)" for pctile.
+    """
+    code = f"egen {newvar} = {function}({expression})"
+    if condition:
+        code += f" if {condition}"
+    opts = []
+    if by:
+        opts.append(f"by({by})")
+    if replace:
+        opts.append("replace")
+    if extra_opts:
+        opts.append(extra_opts)
     if opts:
         code += ", " + " ".join(opts)
     return _run(code)
