@@ -10,9 +10,20 @@ from config import initialize_pystata
 # all in one call. Edition and path are resolved via the strategy chain
 # in config.py (env vars → saved config → autodetect → interactive prompt).
 # Must run before 'from pystata import stata'.
-initialize_pystata()
+#
+# Wrapped in try/except so the module always imports successfully even when
+# Stata is not installed.  check_stata() exposes the status to the splash.
 
-from pystata import stata  # noqa: E402
+_STATA_OK: bool = False
+_STATA_INIT_EXC: BaseException | None = None
+stata = None  # type: ignore[assignment]  -- replaced below on success
+
+try:
+    initialize_pystata()
+    from pystata import stata  # type: ignore[assignment]  # noqa: E402
+    _STATA_OK = True
+except Exception as _e:
+    _STATA_INIT_EXC = _e
 
 
 @dataclass
@@ -116,6 +127,52 @@ def get_stata_version() -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _brief_stata_error(exc: BaseException | None) -> str:
+    """Map a Stata/pystata exception to a 1-3 word splash label."""
+    if exc is None:
+        return "Unknown error"
+    text = str(exc).lower()
+    if isinstance(exc, (ImportError, ModuleNotFoundError)) or "no module" in text:
+        return "Stata not installed"
+    if isinstance(exc, FileNotFoundError) or "not found" in text:
+        return "Stata not found"
+    if "license" in text:
+        return "License error"
+    if "permission" in text or "access denied" in text:
+        return "Permission denied"
+    if "timeout" in text or "timed out" in text:
+        return "Connection timeout"
+    return "PyStata not responsive"
+
+
+def check_stata() -> tuple[bool, str, str, str | None]:
+    """Verify Stata is reachable and return display info for the splash.
+
+    Returns:
+        ok           – True if Stata responded correctly
+        edition      – e.g. "MP", "SE", or "unknown"
+        version      – e.g. "StataNow 19" or "unknown"
+        brief_error  – short label shown next to the ✗, or None on success
+    """
+    if not _STATA_OK or stata is None:
+        return False, "unknown", "unknown", _brief_stata_error(_STATA_INIT_EXC)
+    # Fire a silent no-op to confirm the engine is responsive.
+    try:
+        stata.run("local __chk = 1", echo=False)
+    except Exception as e:
+        return False, "unknown", "unknown", _brief_stata_error(e)
+    # Engine responded — read edition and version.
+    edition = "unknown"
+    try:
+        from config import find_stata  # noqa: PLC0415
+        install = find_stata()
+        edition = install.edition.upper()
+    except Exception:
+        pass
+    version = get_stata_version()
+    return True, edition, version, None
 
 
 def describe_data() -> StataResult:
