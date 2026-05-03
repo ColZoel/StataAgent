@@ -33,8 +33,8 @@ provider: huggingface
 #
 # LiteLLM model string sent to the API: "<litellm_prefix>/<model>"
 #   e.g. provider=groq + model=llama3-8b-8192 → "groq/llama3-8b-8192"
-model: sambanova/meta-llama/Llama-3.3-70B-Instruct  # model name sent in the request body
-
+model: nscale/openai/gpt-oss-20b  # model name sent in the request body
+#  test command: load auto and describe
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
