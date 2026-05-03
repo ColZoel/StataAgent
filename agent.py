@@ -27,17 +27,22 @@ from stata_tools import (
     gegen,
     gquantiles,
     gunique,
+    check_package_installed,
+    ssc_install,
+    reghdfe,
+    ppmlhdfe,
     run_raw_stata,
+    set_stata_locale,
 )
 
 
 @dataclass
 class StataContext:
-    """Shared state across tool calls. Right now just tracks
-    whether a dataset has been loaded — useful for better error
-    messages and for the system prompt."""
+    """Shared state across tool calls."""
     dataset_loaded: bool = False
     dataset_path: str | None = None
+    language: str = "en"       # ISO 639-1 code detected from first query
+    language_set: bool = False  # True after the first detection; never re-detect
 
 
 # The agent itself. 'claude-sonnet-4-5' is a reasonable default;
@@ -72,7 +77,34 @@ def _build_system_prompt(commentary: bool = True) -> str:
         "8. Use gstats_tabstat or gstats_summarize instead of native tabstat/summarize, "
         "   and use gquantiles instead of native pctile/xtile/_pctile, whenever the "
         "   operation must be performed WITHIN by() groups. For ungrouped summary stats "
-        "   or quantiles, use the native commands via run_stata."
+        "   or quantiles, use the native commands via run_stata.\n"
+        "9. For fixed-effects regression, use run_hdfe_regression. Choose the estimator "
+        "   based on the dependent variable: call summarize_vars on it first, then:\n"
+        "   - Use 'continuous' (reghdfe) if the variable has non-integer or negative values.\n"
+        "   - Use 'count' (ppmlhdfe) if all values are non-negative integers with a "
+        "     distribution typical of counts (mean << variance or heavy right skew).\n"
+        "   - If genuinely unclear, ask the user: 'Is [varname] a count variable or "
+        "     can it be treated as continuous?'\n"
+        "10. Before running any user-contributed command (reghdfe, ppmlhdfe, gtools, etc.), "
+        "    use install_stata_package to check if it is installed. If it is not, tell the "
+        "    user which package is missing and ask for confirmation before installing.\n"
+        "11. Language detection (do this ONCE on the very first user message, never again):\n"
+        "    a. Detect the user's language and call set_session_language with the ISO 639-1\n"
+        "       code (e.g. 'es') and, if supported, the matching Stata locale\n"
+        "       (es→es_ES, fr→fr_FR, de→de_DE, it→it_IT, pt→pt_PT, zh→zh_CN,\n"
+        "        ja→ja_JP, ko→ko_KR, ru→ru_RU, ar→ar_SA). Omit stata_locale for English\n"
+        "       or for languages without a known Stata locale.\n"
+        "    b. After calling set_session_language the tool will attempt\n"
+        "       `set locale_functions <locale>` and `label language <code>` in Stata.\n"
+        "       Errors from those commands are non-fatal — proceed regardless.\n"
+        "12. Variable label translation: when you show variable names and labels\n"
+        "    (e.g. from describe_dataset output), translate each label into the user's\n"
+        "    language and append it in parentheses — e.g. 'ingreso (income)'. If you\n"
+        "    cannot confidently translate a label, show it as-is.\n"
+        "13. Response language: Stata commands are ALWAYS written in English. The raw\n"
+        "    Stata log output is ALWAYS shown as-is (it is always in English). Your own\n"
+        "    interpretation, explanations, and conversational text must be in the user's\n"
+        "    detected language."
     )
 
 
@@ -97,6 +129,47 @@ def load_data(ctx: RunContext[StataContext], path: str) -> str:
         ctx.deps.dataset_path = path
         return f"Dataset loaded from {path}.\n{result.output}"
     return f"Failed to load: {result.error}"
+
+
+@agent.tool
+def set_session_language(
+    ctx: RunContext[StataContext],
+    language_code: str,
+    stata_locale: str | None = None,
+) -> str:
+    """Record the language detected from the user's first message. Call this
+    exactly once per session, before any other interaction.
+
+    language_code: ISO 639-1 code, e.g. "es", "fr", "de", "zh".
+    stata_locale: POSIX locale for `set locale_functions`, e.g. "es_ES".
+        Omit for English or unsupported languages.
+
+    Attempts `set locale_functions <stata_locale>` and
+    `label language <language_code>` in Stata. Both failures are
+    non-fatal — the session language is stored regardless.
+    """
+    ctx.deps.language = language_code
+    ctx.deps.language_set = True
+
+    messages: list[str] = [f"Session language set to '{language_code}'."]
+
+    if stata_locale:
+        loc_result = set_stata_locale(stata_locale)
+        if loc_result.success:
+            messages.append(f"Stata locale_functions set to '{stata_locale}'.")
+        else:
+            messages.append(
+                f"set locale_functions '{stata_locale}' failed (non-fatal): {loc_result.error}"
+            )
+        lbl_result = run_raw_stata(f"label language {language_code}")
+        if lbl_result.success:
+            messages.append(f"Stata label language set to '{language_code}'.")
+        else:
+            messages.append(
+                f"label language '{language_code}' not available in this dataset (non-fatal)."
+            )
+
+    return " ".join(messages)
 
 
 def _require_dataset(ctx: RunContext[StataContext]) -> str | None:
@@ -460,6 +533,73 @@ def count_unique(
     if err := _require_dataset(ctx):
         return err
     result = gunique(varlist, by, generate, replace, detail, missing, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def install_stata_package(ctx: RunContext[StataContext], pkg: str) -> str:
+    """Check whether a user-contributed Stata package is installed and, if not,
+    install it from SSC.
+
+    Always call this before running any user-contributed command (reghdfe,
+    ppmlhdfe, gtools, etc.). If the package is missing, inform the user and
+    ask for confirmation before calling this tool to install.
+
+    Returns a status message indicating whether the package was already
+    present or was freshly installed.
+    """
+    cmd = pkg.lower().strip()
+    if check_package_installed(cmd):
+        return f"Package '{pkg}' is already installed."
+    result = ssc_install(pkg)
+    if result.success:
+        return f"Package '{pkg}' installed successfully.\n{result.output}"
+    return f"Installation failed: {result.error}\n{result.output}"
+
+
+@agent.tool
+def run_hdfe_regression(
+    ctx: RunContext[StataContext],
+    dependent: str,
+    independents: list[str],
+    absorb: str,
+    outcome_type: str,
+    vce: str | None = None,
+    condition: str | None = None,
+    residuals: str | None = None,
+    exposure: str | None = None,
+) -> str:
+    """Run a high-dimensional fixed-effects regression.
+
+    outcome_type must be one of:
+        "continuous" — OLS via reghdfe. Use when the dependent variable takes
+            non-integer or negative values, or is otherwise a continuous measure.
+        "count"      — Poisson PPML via ppmlhdfe. Use when the dependent variable
+            contains non-negative integers (trade flows, patent counts, events, etc.).
+
+    Before calling this tool:
+      1. Run summarize_vars on the dependent variable to inspect its distribution.
+      2. Determine outcome_type from that output (see rules in system prompt).
+      3. Confirm the required package is installed via install_stata_package
+         (reghdfe for continuous, ppmlhdfe for count).
+
+    absorb: space-separated fixed-effect variables to absorb, e.g. "firm year".
+    vce: standard error type, e.g. "robust" or "cluster firmid".
+    residuals: (continuous only) variable name to store absorbed residuals.
+    exposure: (count only) exposure variable for the Poisson offset.
+    condition: optional if-expression.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    if outcome_type == "continuous":
+        result = reghdfe(dependent, independents, absorb, vce, condition, residuals)
+    elif outcome_type == "count":
+        result = ppmlhdfe(dependent, independents, absorb, vce, condition, exposure)
+    else:
+        return (
+            f"Unknown outcome_type '{outcome_type}'. "
+            "Must be 'continuous' (reghdfe) or 'count' (ppmlhdfe)."
+        )
     return result.output if result.success else f"Error: {result.error}"
 
 

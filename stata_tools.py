@@ -563,6 +563,79 @@ def gunique(
     return _run(code)
 
 
+def check_package_installed(cmd: str) -> bool:
+    """Return True if a user-contributed command is available in Stata."""
+    try:
+        stata.run(f"which {cmd}", echo=False)
+        return True
+    except Exception:
+        return False
+
+
+def ssc_install(pkg: str) -> StataResult:
+    """Install a package from SSC (Stata Statistical Software Components)."""
+    return _run(f"ssc install {pkg}, replace")
+
+
+def reghdfe(
+    dependent: str,
+    independents: list[str],
+    absorb: str,
+    vce: str | None = None,
+    condition: str | None = None,
+    residuals: str | None = None,
+) -> StataResult:
+    """OLS with high-dimensional fixed effects via reghdfe.
+
+    absorb: space-separated fixed-effect variables, e.g. "firm year".
+    vce: variance estimator, e.g. "robust" or "cluster firmid".
+    residuals: variable name to store residuals after absorption.
+    """
+    xvars = " ".join(independents)
+    code = f"reghdfe {dependent} {xvars}"
+    if condition:
+        code += f" if {condition}"
+    opts = [f"absorb({absorb})"]
+    if vce:
+        opts.append(f"vce({vce})")
+    if residuals:
+        opts.append(f"residuals({residuals})")
+    code += ", " + " ".join(opts)
+    return _run(code)
+
+
+def ppmlhdfe(
+    dependent: str,
+    independents: list[str],
+    absorb: str,
+    vce: str | None = None,
+    condition: str | None = None,
+    exposure: str | None = None,
+    offset: str | None = None,
+) -> StataResult:
+    """Poisson PPML with high-dimensional fixed effects via ppmlhdfe.
+
+    Use for count or non-negative outcomes (trade flows, patent counts, etc.).
+    absorb: space-separated fixed-effect variables, e.g. "exporter importer year".
+    vce: variance estimator, e.g. "robust" or "cluster id".
+    exposure: variable for Poisson exposure (logged offset with coef forced to 1).
+    offset: variable for a free-coefficient log offset.
+    """
+    xvars = " ".join(independents)
+    code = f"ppmlhdfe {dependent} {xvars}"
+    if condition:
+        code += f" if {condition}"
+    opts = [f"absorb({absorb})"]
+    if vce:
+        opts.append(f"vce({vce})")
+    if exposure:
+        opts.append(f"exposure({exposure})")
+    if offset:
+        opts.append(f"offset({offset})")
+    code += ", " + " ".join(opts)
+    return _run(code)
+
+
 def run_raw_stata(code: str) -> StataResult:
     """Escape hatch: run arbitrary Stata code.
 
@@ -571,3 +644,12 @@ def run_raw_stata(code: str) -> StataResult:
     user-contributed packages, etc.).
     """
     return _run(code)
+
+
+def set_stata_locale(locale: str) -> StataResult:
+    """Set Stata's locale for string functions (e.g. strupper/strlower).
+
+    locale: POSIX-style locale string, e.g. "es_ES", "fr_FR", "de_DE".
+    Silently succeeds even if Stata does not support the locale on this OS.
+    """
+    return _run(f"set locale_functions {locale}")
