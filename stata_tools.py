@@ -84,11 +84,38 @@ def get_varnames() -> list[str]:
     r(varlist). Returns an empty list if no dataset is loaded.
     """
     try:
-        stata.run("ds", echo=False)
+        stata.run("quietly ds", echo=False)
         raw = stata.get_return().get("r(varlist)", "") or ""
         return raw.split()
     except Exception:
         return []
+
+
+def get_stata_version() -> str:
+    """Return the Stata version string, e.g. 'StataNow 19' or '18.0'.
+
+    Queries c(stata_version) first (available in Stata 18+, returns the
+    branded string like 'StataNow 19'); falls back to c(version) for
+    older installations.
+    """
+    try:
+        stata.run("scalar __sv = c(stata_version)", echo=False)
+        v = stata.get_scalar("__sv")
+        stata.run("scalar drop __sv", echo=False)
+        if v:
+            return str(v).strip()
+    except Exception:
+        pass
+    try:
+        stata.run("scalar __sv = c(version)", echo=False)
+        v = stata.get_scalar("__sv")
+        stata.run("scalar drop __sv", echo=False)
+        if v:
+            # c(version) is numeric; drop trailing .0 for clean display
+            return str(int(v)) if float(v) == int(float(v)) else str(v)
+    except Exception:
+        pass
+    return "unknown"
 
 
 def describe_data() -> StataResult:

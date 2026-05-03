@@ -42,6 +42,7 @@ from error_handler import print_error
 from stata_tools import (
     StataResult,
     describe_data,
+    get_stata_version,
     get_varnames,
     load_dataset,
     regress,
@@ -385,9 +386,11 @@ def display_splash(cfg: AgentConfig) -> None:
 
     try:
         stata_install = find_stata()
-        stata_edition = f"Stata {stata_install.edition.upper()}"
+        stata_edition = stata_install.edition.upper()
     except Exception:
-        stata_edition = "Stata (unknown edition)"
+        stata_edition = "unknown"
+
+    stata_version = get_stata_version()
 
     ascii_art = pyfiglet.figlet_format("StataAgent", font="slant")
 
@@ -401,7 +404,8 @@ def display_splash(cfg: AgentConfig) -> None:
     commentary_label = "on" if cfg.commentary else "off"
 
     status_table = Table(show_header=False, box=None, padding=(0, 1))
-    status_table.add_row("[bold]Stata:[/bold]",      f"[green]{stata_edition}[/green]")
+    status_table.add_row("[bold]Stata Edition:[/bold]",  f"[green]{stata_edition}[/green]")
+    status_table.add_row("[bold]Stata Version:[/bold]",  f"[green]{stata_version}[/green]")
     status_table.add_row("[bold]Provider:[/bold]",   cfg.provider)
     status_table.add_row("[bold]Model:[/bold]",      cfg.model)
     status_table.add_row("[bold]Commentary:[/bold]", commentary_label)
