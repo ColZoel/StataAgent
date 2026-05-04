@@ -7,6 +7,9 @@ Key concepts you'll see:
   LLM can call. PydanticAI reads type hints to build the schema.
 - RunContext: gives tools access to shared state (like the loaded dataset).
 """
+import urllib.request
+import urllib.error
+from html.parser import HTMLParser
 from dataclasses import dataclass
 from pydantic_ai import Agent, RunContext
 
@@ -88,6 +91,9 @@ def _build_system_prompt(commentary: bool = True) -> str:
         "10. Before running any user-contributed command (reghdfe, ppmlhdfe, gtools, etc.), "
         "    use install_stata_package to check if it is installed. If it is not, tell the "
         "    user which package is missing and ask for confirmation before installing.\n"
+        "    Also call lookup_stata_docs for any command whose exact option syntax you are "
+        "    not certain of — treat the returned text as ground truth and adjust your "
+        "    arguments accordingly before running the command.\n"
         "11. Language detection (do this ONCE on the very first user message, never again):\n"
         "    a. Detect the user's language and call set_session_language with the ISO 639-1\n"
         "       code (e.g. 'es') and, if supported, the matching Stata locale\n"
@@ -601,6 +607,93 @@ def run_hdfe_regression(
             "Must be 'continuous' (reghdfe) or 'count' (ppmlhdfe)."
         )
     return result.output if result.success else f"Error: {result.error}"
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Strip HTML tags and collapse whitespace into readable plain text."""
+
+    _SKIP_TAGS = {"script", "style", "head", "nav", "footer"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._skip_depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            stripped = data.strip()
+            if stripped:
+                self._parts.append(stripped)
+
+    def get_text(self) -> str:
+        return "\n".join(self._parts)
+
+
+@agent.tool
+def lookup_stata_docs(ctx: RunContext[StataContext], cmd: str) -> str:
+    """Look up the official syntax and options for a Stata command.
+
+    Fetches the help page from stata.com for built-in commands, then
+    falls back to running `help <cmd>` inside Stata for user-contributed
+    commands that are already installed (e.g. reghdfe, ppmlhdfe, gtools).
+
+    Use this tool before running any command you are uncertain about —
+    especially user-contributed commands or commands with complex option
+    syntax. The returned text is the canonical reference; use it to
+    verify that arguments and option names are correct before calling
+    run_stata or a structured tool.
+    """
+    STATA_HELP_URL = f"https://www.stata.com/help.cgi?{urllib.request.quote(cmd)}"
+    web_text: str | None = None
+    web_error: str | None = None
+
+    try:
+        req = urllib.request.Request(
+            STATA_HELP_URL,
+            headers={"User-Agent": "StataAgent/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        extractor = _HTMLTextExtractor()
+        extractor.feed(html)
+        raw = extractor.get_text()
+        # Stata's help.cgi returns "not found" pages for unknown commands.
+        if "not found" in raw.lower() or len(raw) < 100:
+            web_text = None
+        else:
+            # Cap at ~4 000 chars so the context doesn't balloon.
+            web_text = raw[:4000].strip()
+    except urllib.error.URLError as exc:
+        web_error = str(exc)
+    except Exception as exc:
+        web_error = str(exc)
+
+    # For user-contributed or unlisted commands, also try `help` inside Stata.
+    stata_help_text: str | None = None
+    if web_text is None:
+        stata_result = run_raw_stata(f"help {cmd}")
+        if stata_result.success and stata_result.output.strip():
+            stata_help_text = stata_result.output.strip()[:4000]
+
+    if web_text and stata_help_text:
+        return f"=== stata.com ===\n{web_text}\n\n=== Stata help ===\n{stata_help_text}"
+    if web_text:
+        return f"=== stata.com ===\n{web_text}"
+    if stata_help_text:
+        return f"=== Stata help (local) ===\n{stata_help_text}"
+    return (
+        f"Could not retrieve documentation for '{cmd}'.\n"
+        f"Web error: {web_error or 'none'}\n"
+        "Check that the command name is spelled correctly and the package is installed."
+    )
 
 
 @agent.tool
