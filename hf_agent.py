@@ -522,13 +522,20 @@ def display_splash(
     ))
 
     commentary_label = "on" if cfg.commentary else "off"
+    rigor_labels = {
+        "silent":         "silent",
+        "colleague":      "colleague",
+        "reviewer":       "reviewer",
+        "journal_editor": "journal editor",
+    }
+    rigor_label = rigor_labels.get(cfg.rigor, cfg.rigor)
 
     t = Table(show_header=False, box=None, padding=(0, 1))
     t.add_row("[bold]Stata Edition:[/bold]", stata_edition, "")
     t.add_row("[bold]Stata Version:[/bold]", stata_version, _check_cell(stata_ok, stata_brief))
-    t.add_row("[bold]Provider:[/bold]",      cfg.provider,  "")
     t.add_row("[bold]Model:[/bold]",         cfg.model,     _check_cell(llm_ok, llm_brief))
     t.add_row("[bold]Commentary:[/bold]",    commentary_label, "")
+    t.add_row("[bold]Rigor:[/bold]",         rigor_label,   "")
     t.add_row(
         "[bold]GitHub:[/bold]",
         "[link=https://github.com/ColZoel/StataAgent]StataAgent[/link]",
