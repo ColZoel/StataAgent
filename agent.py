@@ -10,7 +10,8 @@ Key concepts you'll see:
 import urllib.request
 import urllib.error
 from html.parser import HTMLParser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from stata_tools import (
@@ -39,13 +40,64 @@ from stata_tools import (
 )
 
 
+class AnalysisStep(BaseModel):
+    """One step in a proposed analysis plan."""
+    number: int
+    description: str
+    stata_intent: str       # the Stata command this step maps to (loosely)
+    status: str = "pending" # pending | done | skipped
+
+
+@dataclass
+class AnalysisPlan:
+    """Structured plan produced during MODE 1 (CLARIFY)."""
+    question: str
+    steps: list[AnalysisStep] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    clarifications: list[str] = field(default_factory=list)
+    proposed_spec: str = ""        # core regression command as currently planned
+    confirmed: bool = False
+    amendments: list[str] = field(default_factory=list)  # history of user changes
+
+
+RIGOR_PROMPTS: dict[str, str] = {
+    "silent": (
+        "Rigor level: SILENT. Run exactly what the user asks and report results. "
+        "Flag only hard errors (missing variable, wrong type, Stata error). "
+        "No unsolicited methodological commentary, no suggestions, no caveats."
+    ),
+    "colleague": (
+        "Rigor level: COLLEAGUE. Flag obvious issues once, non-intrusively — "
+        "e.g. 'FYI: SEs aren't clustered — want me to add that?' "
+        "Suggest one improvement after results. Do not repeat the same point."
+    ),
+    "reviewer": (
+        "Rigor level: REVIEWER. Before reporting results, proactively check "
+        "standard assumptions: parallel trends for DiD, VIF for multicollinearity, "
+        "cluster count adequacy (warn if < 30), model fit. Ask explicitly about "
+        "robustness checks. Note key caveats before interpreting any result."
+    ),
+    "journal_editor": (
+        "Rigor level: JOURNAL EDITOR. Treat every specification as a submission "
+        "under scrutiny. Require justification for modeling choices. Suggest "
+        "alternative specifications, heterogeneity checks, placebo tests, and "
+        "multiple testing corrections. Do not summarize results without a full "
+        "assumption audit."
+    ),
+}
+
+
 @dataclass
 class StataContext:
     """Shared state across tool calls."""
     dataset_loaded: bool = False
     dataset_path: str | None = None
-    language: str = "en"       # ISO 639-1 code detected from first query
-    language_set: bool = False  # True after the first detection; never re-detect
+    language: str = "en"           # ISO 639-1 code detected from first query
+    language_set: bool = False     # True after the first detection; never re-detect
+    rigor: str = "colleague"       # silent | colleague | reviewer | journal_editor
+    analysis_phase: str = "idle"   # idle | clarify | executing | reflecting
+    current_plan: AnalysisPlan | None = None
+    plan_version: int = 0          # increments with each amendment
 
 
 # The agent itself. 'claude-sonnet-4-5' is a reasonable default;
@@ -110,7 +162,61 @@ def _build_system_prompt(commentary: bool = True) -> str:
         "13. Response language: Stata commands are ALWAYS written in English. The raw\n"
         "    Stata log output is ALWAYS shown as-is (it is always in English). Your own\n"
         "    interpretation, explanations, and conversational text must be in the user's\n"
-        "    detected language."
+        "    detected language.\n"
+        "14. Three-mode analysis protocol — apply ONLY for complex analytical requests\n"
+        "    (regressions, causal inference, DiD, IV, panel models, matching, event\n"
+        "    studies). Skip this protocol for simple requests (describe, summarize,\n"
+        "    tabulate, load, reshape).\n"
+        "\n"
+        "    MODE 1 — CLARIFY (call propose_analysis_plan):\n"
+        "      Before touching the data, identify every ambiguity that could change the\n"
+        "      model specification: treatment indicator, time variable, clustering level,\n"
+        "      sample restriction, functional form. For each step include description\n"
+        "      and the Stata command it maps to. State your proposed_spec (the core\n"
+        "      regression command as currently planned, e.g.\n"
+        "      'regress outcome i.treat##i.post i.year, vce(cluster schoolid)').\n"
+        "      After presenting, ask: 'Ready to proceed, or would you like to adjust\n"
+        "      anything?'\n"
+        "\n"
+        "    AMENDMENT LOOP (call amend_plan for any user changes):\n"
+        "      When the user suggests changes — however small — call amend_plan with:\n"
+        "        - amendment_description: a one-line summary of what changed\n"
+        "        - updated_steps: the FULL revised step list (not just the changed steps)\n"
+        "        - updated_spec: the revised core Stata command\n"
+        "        - updated_assumptions: the revised assumption list\n"
+        "      amend_plan re-states the full plan and asks for confirmation again.\n"
+        "      Repeat until the user gives clear confirmation.\n"
+        "      NEVER begin execution mid-amendment or infer confirmation from partial\n"
+        "      approval (e.g. 'sure, and also change X' is an amendment, not a confirm).\n"
+        "\n"
+        "    MODE 2 — EXECUTE (call begin_execution ONLY on clear confirmation):\n"
+        "      Clear confirmation = 'yes', 'looks good', 'go ahead', 'proceed',\n"
+        "      or equivalent with no further requested changes.\n"
+        "      Call begin_execution to record final confirmed assumptions and\n"
+        "      transition to executing. Then run each step in order, reporting\n"
+        "      findings before proceeding. At decision forks where data contradicts\n"
+        "      an assumption, stop and ask rather than silently substituting.\n"
+        "\n"
+        "    MODE 3 — REFLECT (call reflect_on_results after the final step):\n"
+        "      Interpret the key coefficient(s) in substantive terms.\n"
+        "      Then assess these concerns in order — raise any that apply:\n"
+        "        a. Cluster count: if N_clusters < 30, warn that clustered SEs may be\n"
+        "           unreliable and suggest wild bootstrap (boottest).\n"
+        "        b. Sample size: if total N or treated N is small (< ~100), flag\n"
+        "           underpowered estimates.\n"
+        "        c. Parallel trends (DiD only): suggest a pre-trend test or event-study\n"
+        "           plot if one was not run.\n"
+        "        d. Model fit: note R² or pseudo-R² and flag if suspiciously high or low.\n"
+        "        e. Confounders: name one specific variable that is plausibly omitted\n"
+        "           given the research question — don't give generic advice.\n"
+        "      End with exactly ONE concrete next step as a specific Stata command or\n"
+        "      test (e.g. 'Run boottest treat#post, reps(999) to get wild-bootstrap\n"
+        "      p-values'), not a vague offer to 'improve the model'.\n"
+        "      The depth of the reflection is governed by the active rigor level.\n"
+        "      Call reflect_on_results to store the reflection in context.\n"
+        "15. Rigor level: the active level is injected dynamically. Adjust the depth\n"
+        "    of unsolicited commentary, assumption checking, and MODE 3 reflection\n"
+        "    accordingly. Use set_rigor if the user asks to change level mid-session."
     )
 
 
@@ -119,6 +225,12 @@ agent = Agent(
     deps_type=StataContext,
     system_prompt=_build_system_prompt(commentary=True),
 )
+
+
+@agent.system_prompt
+def inject_rigor(ctx: RunContext[StataContext]) -> str:
+    """Appended to every request — tells the model which rigor level is active."""
+    return RIGOR_PROMPTS.get(ctx.deps.rigor, RIGOR_PROMPTS["colleague"])
 
 
 # --- Tool registrations ---
@@ -694,6 +806,223 @@ def lookup_stata_docs(ctx: RunContext[StataContext], cmd: str) -> str:
         f"Web error: {web_error or 'none'}\n"
         "Check that the command name is spelled correctly and the package is installed."
     )
+
+
+@agent.tool
+def propose_analysis_plan(
+    ctx: RunContext[StataContext],
+    question: str,
+    steps: list[AnalysisStep],
+    proposed_spec: str,
+    assumptions: list[str],
+    clarifications: list[str],
+) -> str:
+    """MODE 1 — CLARIFY. Call this before touching the data for any complex
+    analytical request (regression, DiD, IV, panel, matching, event study).
+
+    question: the user's original analytical question, verbatim or paraphrased.
+    steps: numbered execution plan. Each step has number, description, and
+        stata_intent (the Stata command it maps to), e.g.:
+        [{"number": 1, "description": "Load and describe data",
+          "stata_intent": "use / describe"},
+         {"number": 4, "description": "Run DiD regression",
+          "stata_intent": "regress outcome i.treat##i.post i.year, vce(cluster schoolid)"}]
+    proposed_spec: the core regression command as currently planned, e.g.
+        "regress outcome i.treat##i.post i.year, vce(cluster schoolid)".
+    assumptions: methodological choices you will make by default, e.g.
+        ["treat is already binary in the data", "year >= 2019 is the post-period"].
+    clarifications: open questions that could change the spec, e.g.
+        ["Is there a pre-existing treatment indicator or should I construct one?"].
+
+    Stores the plan in context and transitions analysis_phase to 'clarify'.
+    Returns a formatted message to show the user — do NOT paraphrase it.
+    """
+    ctx.deps.current_plan = AnalysisPlan(
+        question=question,
+        steps=steps,
+        assumptions=assumptions,
+        clarifications=clarifications,
+        proposed_spec=proposed_spec,
+    )
+    ctx.deps.analysis_phase = "clarify"
+    ctx.deps.plan_version = 1
+
+    return _format_plan(
+        steps=steps,
+        proposed_spec=proposed_spec,
+        assumptions=assumptions,
+        clarifications=clarifications,
+        preamble="Here's my plan:" if not clarifications else
+                 "Before I load the data, a few clarifying questions:",
+        changes=None,
+    )
+
+
+def _format_plan(
+    steps: list[AnalysisStep],
+    proposed_spec: str,
+    assumptions: list[str],
+    clarifications: list[str],
+    preamble: str,
+    changes: str | None,
+) -> str:
+    lines: list[str] = [preamble]
+
+    if clarifications:
+        for i, q in enumerate(clarifications, 1):
+            lines.append(f"  {i}. {q}")
+        lines.append("")
+
+    lines.append("Plan:")
+    for s in steps:
+        lines.append(f"  [{s.number}] {s.description}  → {s.stata_intent}")
+
+    if proposed_spec:
+        lines.append(f"\nCore specification: {proposed_spec}")
+
+    if assumptions:
+        lines.append("\nAssumptions:")
+        for a in assumptions:
+            lines.append(f"  - {a}")
+
+    if changes:
+        lines.append(f"\nChanges: {changes}")
+
+    lines.append("\nReady to proceed, or would you like to adjust anything?")
+    return "\n".join(lines)
+
+
+@agent.tool
+def amend_plan(
+    ctx: RunContext[StataContext],
+    amendment_description: str,
+    updated_steps: list[AnalysisStep],
+    updated_spec: str,
+    updated_assumptions: list[str],
+) -> str:
+    """AMENDMENT LOOP. Call whenever the user requests any change to the plan,
+    however small. Re-states the full updated plan and asks for confirmation.
+
+    amendment_description: one-line summary of what changed, e.g.
+        "Added year fixed effects (i.year) and clustering by schoolid".
+    updated_steps: the COMPLETE revised step list (replace all, not append).
+    updated_spec: the revised core Stata command.
+    updated_assumptions: the revised assumption list.
+
+    Records the amendment in history, increments plan_version, and asks for
+    confirmation again. Do NOT call begin_execution until the user explicitly
+    confirms the amended plan.
+    """
+    if ctx.deps.current_plan is None:
+        return "No active plan to amend. Call propose_analysis_plan first."
+
+    ctx.deps.current_plan.steps = updated_steps
+    ctx.deps.current_plan.proposed_spec = updated_spec
+    ctx.deps.current_plan.assumptions = updated_assumptions
+    ctx.deps.current_plan.amendments.append(amendment_description)
+    ctx.deps.plan_version += 1
+
+    return _format_plan(
+        steps=updated_steps,
+        proposed_spec=updated_spec,
+        assumptions=updated_assumptions,
+        clarifications=[],
+        preamble="Got it. Updated plan:",
+        changes=amendment_description,
+    )
+
+
+@agent.tool
+def begin_execution(
+    ctx: RunContext[StataContext],
+    confirmed_assumptions: list[str],
+) -> str:
+    """MODE 2 — EXECUTE. Call ONLY when the user gives clear confirmation
+    (yes / looks good / go ahead / proceed) with no further requested changes.
+
+    confirmed_assumptions: the final list of assumptions, incorporating all
+        amendments the user approved.
+
+    Marks the plan as confirmed, transitions analysis_phase to 'executing',
+    and returns a go-ahead message. After calling this, run each step in
+    order and report findings before proceeding to the next step.
+    """
+    if ctx.deps.current_plan is not None:
+        ctx.deps.current_plan.assumptions = confirmed_assumptions
+        ctx.deps.current_plan.confirmed = True
+    ctx.deps.analysis_phase = "executing"
+    return "Plan confirmed. Proceeding with execution."
+
+
+@agent.tool
+def reflect_on_results(
+    ctx: RunContext[StataContext],
+    results_summary: str,
+    concerns: list[str],
+    next_step: str,
+) -> str:
+    """MODE 3 — REFLECT. Call this after all execution steps are complete.
+
+    results_summary: one or two sentences interpreting the key coefficient(s)
+        in substantive terms (e.g. "The treat×post coefficient is 0.23 (p=0.04),
+        suggesting the policy increased test scores by 0.23 SD among treated
+        grade-10 students after 2019.").
+    concerns: specific methodological issues identified — raise only those that
+        apply given the active rigor level. E.g.:
+        ["Only 12 clusters: wild-bootstrap SEs recommended (boottest)",
+         "No parallel trends test run — consider an event-study plot"].
+        Leave empty if none apply (appropriate for SILENT rigor).
+    next_step: ONE concrete actionable step as a specific command or test.
+        E.g. "boottest treat#post, reps(999) weighttype(webb)"
+        Omit for SILENT rigor unless the user asked for suggestions.
+
+    Transitions analysis_phase to 'reflecting'.
+    Returns a formatted reflection block — do NOT paraphrase it.
+    """
+    ctx.deps.analysis_phase = "reflecting"
+
+    lines: list[str] = [results_summary]
+
+    if concerns:
+        lines.append("\nMethodological notes:")
+        for c in concerns:
+            lines.append(f"  - {c}")
+
+    if next_step:
+        lines.append(f"\nSuggested next step: {next_step}")
+
+    return "\n".join(lines)
+
+
+@agent.tool
+def set_rigor(ctx: RunContext[StataContext], level: str) -> str:
+    """Change the analysis rigor level for the rest of the session.
+
+    level must be one of:
+        "silent"         — runs what you ask, flags only hard errors, no commentary.
+        "colleague"      — flags obvious issues once, suggests one improvement.
+        "reviewer"       — checks standard assumptions, asks about robustness checks.
+        "journal_editor" — full assumption audit, requires justification, suggests
+                           alternative specs and placebo tests.
+
+    Call this when the user says something like 'be more critical', 'just run it',
+    'act like a reviewer', or 'set rigor to X'.
+    """
+    normalized = level.lower().strip()
+    valid = set(RIGOR_PROMPTS)
+    if normalized not in valid:
+        return (
+            f"Unknown rigor level '{level}'. "
+            f"Choose one of: {', '.join(sorted(valid))}."
+        )
+    ctx.deps.rigor = normalized
+    labels = {
+        "silent": "SILENT — results only, no unsolicited commentary",
+        "colleague": "COLLEAGUE — flags obvious issues once",
+        "reviewer": "REVIEWER — proactive assumption checks and robustness suggestions",
+        "journal_editor": "JOURNAL EDITOR — full assumption audit on every result",
+    }
+    return f"Rigor level set to {labels[normalized]}."
 
 
 @agent.tool

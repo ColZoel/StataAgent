@@ -72,3 +72,15 @@ max_tokens: 4096      # maximum tokens in the model's response
 # When false, the model returns only the raw Stata output with no prose.
 # Can be toggled per-session with --no-commentary / --commentary CLI flags.
 commentary: false
+
+# ---------------------------------------------------------------------------
+# Rigor level
+# ---------------------------------------------------------------------------
+# Controls how much unsolicited methodological commentary the model produces.
+# Supported values:
+#   silent         — runs what you ask, flags only hard errors, no commentary
+#   colleague      — flags obvious issues once, suggests one improvement (default)
+#   reviewer       — proactive assumption checks, robustness suggestions
+#   journal_editor — full assumption audit, requires justification for every choice
+# Can be changed mid-session by asking the model to "set rigor to <level>".
+rigor: colleague

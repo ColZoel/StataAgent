@@ -73,6 +73,9 @@ _PROVIDERS_WITHOUT_AUTH = {"ollama"}
 # ---------------------------------------------------------------------------
 # Config loader
 # ---------------------------------------------------------------------------
+_VALID_RIGOR_LEVELS = {"silent", "colleague", "reviewer", "journal_editor"}
+
+
 @dataclass
 class AgentConfig:
     provider: str
@@ -82,6 +85,7 @@ class AgentConfig:
     temperature: float
     max_tokens: int
     commentary: bool = True
+    rigor: str = "colleague"
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.yaml") -> "AgentConfig":
@@ -102,6 +106,13 @@ class AgentConfig:
                 f"Choose one of: {', '.join(sorted(supported))}"
             )
 
+        rigor = str(raw.get("rigor", "colleague")).lower()
+        if rigor not in _VALID_RIGOR_LEVELS:
+            raise ValueError(
+                f"Unknown rigor level '{rigor}' in config. "
+                f"Choose one of: {', '.join(sorted(_VALID_RIGOR_LEVELS))}"
+            )
+
         return cls(
             provider=provider,
             model=str(raw["model"]),
@@ -110,6 +121,7 @@ class AgentConfig:
             temperature=float(raw.get("temperature", 0.3)),
             max_tokens=int(raw.get("max_tokens", 4096)),
             commentary=bool(raw.get("commentary", True)),
+            rigor=rigor,
         )
 
     def apply_overrides(
@@ -122,12 +134,13 @@ class AgentConfig:
         temperature: float | None = None,
         max_tokens: int | None = None,
         commentary: bool | None = None,
+        rigor: str | None = None,
     ) -> None:
         """Apply CLI overrides on top of the YAML values for this session only.
 
         Only non-None arguments are applied, so callers can pass argparse
         values directly without pre-filtering unset flags.
-        Raises ValueError for an unrecognised provider.
+        Raises ValueError for an unrecognised provider or rigor level.
         """
         if provider is not None:
             supported = set(_LITELLM_PREFIXES)
@@ -149,6 +162,13 @@ class AgentConfig:
             self.max_tokens = max_tokens
         if commentary is not None:
             self.commentary = commentary
+        if rigor is not None:
+            if rigor not in _VALID_RIGOR_LEVELS:
+                raise ValueError(
+                    f"Unknown rigor level '{rigor}'. "
+                    f"Choose one of: {', '.join(sorted(_VALID_RIGOR_LEVELS))}"
+                )
+            self.rigor = rigor
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +222,7 @@ class StataContext:
     dataset_loaded: bool = False
     dataset_path: str | None = None
     varnames: set[str] = field(default_factory=set)
+    rigor: str = "colleague"  # silent | colleague | reviewer | journal_editor
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +678,7 @@ def main() -> None:
     )
 
     agent = build_agent(cfg)
-    ctx = StataContext()
+    ctx = StataContext(rigor=cfg.rigor)
     history: list[ModelMessage] = []
 
     while True:
