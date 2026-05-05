@@ -692,6 +692,7 @@ def main() -> None:
         try:
             subprocess.run(
                 [sys.executable, "-m", "streamlit", "run", str(ui_script)],
+                cwd=str(ui_script.parent),
                 check=False,
             )
         except KeyboardInterrupt:
