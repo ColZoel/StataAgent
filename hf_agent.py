@@ -19,15 +19,23 @@ Usage (REPL):
 """
 from __future__ import annotations
 
+from __init__ import __version__
+
 import argparse
+import json
 import os
 import sys
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pyfiglet
 import yaml
 from dotenv import load_dotenv
 from pydantic_ai import Agent, RunContext
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai_litellm import LiteLLMModel
@@ -35,6 +43,8 @@ from pydantic_ai_litellm import LiteLLMModel
 from error_handler import print_error
 from stata_tools import (
     StataResult,
+    _STATA_INIT_EXC,
+    check_stata,
     describe_data,
     get_varnames,
     load_dataset,
@@ -63,6 +73,9 @@ _PROVIDERS_WITHOUT_AUTH = {"ollama"}
 # ---------------------------------------------------------------------------
 # Config loader
 # ---------------------------------------------------------------------------
+_VALID_RIGOR_LEVELS = {"silent", "colleague", "reviewer", "journal_editor"}
+
+
 @dataclass
 class AgentConfig:
     provider: str
@@ -72,6 +85,7 @@ class AgentConfig:
     temperature: float
     max_tokens: int
     commentary: bool = True
+    rigor: str = "colleague"
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.yaml") -> "AgentConfig":
@@ -92,6 +106,13 @@ class AgentConfig:
                 f"Choose one of: {', '.join(sorted(supported))}"
             )
 
+        rigor = str(raw.get("rigor", "colleague")).lower()
+        if rigor not in _VALID_RIGOR_LEVELS:
+            raise ValueError(
+                f"Unknown rigor level '{rigor}' in config. "
+                f"Choose one of: {', '.join(sorted(_VALID_RIGOR_LEVELS))}"
+            )
+
         return cls(
             provider=provider,
             model=str(raw["model"]),
@@ -100,6 +121,7 @@ class AgentConfig:
             temperature=float(raw.get("temperature", 0.3)),
             max_tokens=int(raw.get("max_tokens", 4096)),
             commentary=bool(raw.get("commentary", True)),
+            rigor=rigor,
         )
 
     def apply_overrides(
@@ -112,12 +134,13 @@ class AgentConfig:
         temperature: float | None = None,
         max_tokens: int | None = None,
         commentary: bool | None = None,
+        rigor: str | None = None,
     ) -> None:
         """Apply CLI overrides on top of the YAML values for this session only.
 
         Only non-None arguments are applied, so callers can pass argparse
         values directly without pre-filtering unset flags.
-        Raises ValueError for an unrecognised provider.
+        Raises ValueError for an unrecognised provider or rigor level.
         """
         if provider is not None:
             supported = set(_LITELLM_PREFIXES)
@@ -139,6 +162,13 @@ class AgentConfig:
             self.max_tokens = max_tokens
         if commentary is not None:
             self.commentary = commentary
+        if rigor is not None:
+            if rigor not in _VALID_RIGOR_LEVELS:
+                raise ValueError(
+                    f"Unknown rigor level '{rigor}'. "
+                    f"Choose one of: {', '.join(sorted(_VALID_RIGOR_LEVELS))}"
+                )
+            self.rigor = rigor
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +222,7 @@ class StataContext:
     dataset_loaded: bool = False
     dataset_path: str | None = None
     varnames: set[str] = field(default_factory=set)
+    rigor: str = "colleague"  # silent | colleague | reviewer | journal_editor
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +396,163 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
 
 
 # ---------------------------------------------------------------------------
+# Rich console (shared)
+# ---------------------------------------------------------------------------
+console = Console()
+
+
+# ---------------------------------------------------------------------------
+# LLM health check
+# ---------------------------------------------------------------------------
+# Update check
+# ---------------------------------------------------------------------------
+
+_GITHUB_RELEASES_URL = (
+    "https://api.github.com/repos/ColZoel/StataAgent/releases/latest"
+)
+
+
+def _version_gt(a: str, b: str) -> bool:
+    """Return True if semver string *a* is strictly greater than *b*."""
+    try:
+        return (
+            tuple(int(x) for x in a.split("."))
+            > tuple(int(x) for x in b.split("."))
+        )
+    except ValueError:
+        return False
+
+
+def check_for_update() -> str | None:
+    """Fetch the latest GitHub release tag and compare with __version__.
+
+    Returns the new version string (e.g. 'v0.1.1') if an update is available,
+    or None if already up-to-date or the check could not be completed.
+    """
+    try:
+        req = urllib.request.Request(
+            _GITHUB_RELEASES_URL,
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": f"StataAgent/{__version__}"},
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+        latest = data.get("tag_name", "").lstrip("v")
+        if latest and _version_gt(latest, __version__):
+            return f"v{latest}"
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+
+def _brief_llm_error(exc: BaseException) -> str:
+    """Map a LiteLLM / PydanticAI exception to a 1-3 word splash label."""
+    text = str(exc)
+    tl = text.lower()
+    for code, phrase in (
+        ("401", "Bad API key"),
+        ("403", "Access forbidden"),
+        ("404", "Model not found"),
+        ("429", "Rate limited"),
+        ("500", "Server error"),
+        ("502", "Server error"),
+        ("503", "Service unavailable"),
+    ):
+        if code in text:
+            return f"Error {code}: {phrase}"
+    if "400" in text:
+        if any(w in tl for w in ("api key", "api_key", "auth", "token")):
+            return "Error 400: Bad API key"
+        return "Error 400: Bad request"
+    if "timeout" in tl or "timed out" in tl:
+        return "Request timeout"
+    if any(w in tl for w in ("network", "unreachable", "connection refused", "no route")):
+        return "No network"
+    return "Unknown error"
+
+
+def check_llm(cfg: AgentConfig) -> tuple[bool, str | None, BaseException | None]:
+    """Send a silent one-word ping to the configured LLM.
+
+    Returns:
+        ok          – True if the model responded
+        brief_error – short label for the splash ✗, or None on success
+        exc         – the raw exception for print_error(), or None on success
+    """
+    try:
+        model = build_model(cfg)
+        ping = Agent(model, system_prompt="You are a connectivity test.")
+        ping.run_sync("Reply with exactly one word: ready")
+        return True, None, None
+    except Exception as exc:
+        return False, _brief_llm_error(exc), exc
+
+
+# ---------------------------------------------------------------------------
+# Splash screen
+# ---------------------------------------------------------------------------
+
+def _check_cell(ok: bool, brief: str | None) -> str:
+    """Render the ✓ / ✗ indicator for a status-table row."""
+    if ok:
+        return "[green]✓[/green]"
+    return f"[red]✗  ({brief})[/red]"
+
+
+def display_splash(
+    cfg: AgentConfig,
+    stata_ok: bool,
+    stata_edition: str,
+    stata_version: str,
+    stata_brief: str | None,
+    llm_ok: bool,
+    llm_brief: str | None,
+    update_version: str | None = None,
+) -> None:
+    """Print the StataAgent banner and status table."""
+    ascii_art = pyfiglet.figlet_format("StataAgent", font="slant")
+
+    console.print(Panel(
+        ascii_art.rstrip(),
+        subtitle=f"AI-Powered Stata  •  v{__version__}",
+        style="bold #0071bc",
+        expand=False,
+    ))
+
+    commentary_label = "on" if cfg.commentary else "off"
+    rigor_labels = {
+        "silent":         "silent",
+        "colleague":      "colleague",
+        "reviewer":       "reviewer",
+        "journal_editor": "journal editor",
+    }
+    rigor_label = rigor_labels.get(cfg.rigor, cfg.rigor)
+
+    t = Table(show_header=False, box=None, padding=(0, 1))
+    t.add_row("[bold]Stata Edition:[/bold]", stata_edition, "")
+    t.add_row("[bold]Stata Version:[/bold]", stata_version, _check_cell(stata_ok, stata_brief))
+    t.add_row("[bold]Model:[/bold]",         cfg.model,     _check_cell(llm_ok, llm_brief))
+    t.add_row("[bold]Commentary:[/bold]",    commentary_label, "")
+    t.add_row("[bold]Rigor:[/bold]",         rigor_label,   "")
+    t.add_row(
+        "[bold]GitHub:[/bold]",
+        "[link=https://github.com/ColZoel/StataAgent]StataAgent[/link]",
+        "",
+    )
+    if update_version:
+        t.add_row(
+            "[bold yellow]Update Available:[/bold yellow]",
+            f"[yellow]{update_version}[/yellow]",
+            "",
+        )
+
+    console.print(t)
+    console.rule(style="#0071bc")
+
+
+# ---------------------------------------------------------------------------
 # REPL entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -472,15 +660,32 @@ def main() -> None:
         print_error(e)
         sys.exit(1)
 
-    commentary_label = "on" if cfg.commentary else "off"
-    print(
-        f"StataAgent ready  |  provider: {cfg.provider}  |  model: {cfg.model}"
-        f"  |  commentary: {commentary_label}\n"
-        "Type your question, or 'quit' to exit.\n"
+    # --- startup health checks -------------------------------------------
+    stata_ok, stata_edition, stata_version, stata_brief = check_stata()
+    llm_ok, llm_brief, llm_exc = check_llm(cfg)
+    update_version = check_for_update()
+
+    display_splash(cfg, stata_ok, stata_edition, stata_version, stata_brief,
+                   llm_ok, llm_brief, update_version)
+
+    if not stata_ok:
+        console.print()
+        exc = _STATA_INIT_EXC or RuntimeError(f"Stata check failed: {stata_brief}")
+        print_error(exc)
+    if not llm_ok and llm_exc is not None:
+        console.print()
+        print_error(llm_exc)
+    if not stata_ok or not llm_ok:
+        sys.exit(1)
+
+    _quit_key = "Ctrl+D" if sys.platform == "darwin" else "Ctrl+C"
+    console.print(
+        f"Type your question. "
+        f"Type [bold]quit[/bold] or press [bold]{_quit_key}[/bold] to exit.\n"
     )
 
     agent = build_agent(cfg)
-    ctx = StataContext()
+    ctx = StataContext(rigor=cfg.rigor)
     history: list[ModelMessage] = []
 
     while True:

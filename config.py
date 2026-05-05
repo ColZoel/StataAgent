@@ -236,19 +236,23 @@ def _interactive_prompt() -> StataInstall | None:
     print("  macOS:   /Applications/Stata/utilities")
     print("  Windows: C:\\Program Files\\Stata19\\utilities")
     print("  Linux:   /usr/local/stata19/utilities")
-    print("(Press Ctrl+C to quit.)\n")
+    _quit_key = "Ctrl+D" if sys.platform == "darwin" else "Ctrl+C"
+    print(f"(Type 'quit' or press {_quit_key} to quit.)\n")
 
     while True:
         try:
-            raw = input("Stata utilities path: ")
+            raw = input("Stata utilities path: ").strip()
         except (EOFError, KeyboardInterrupt):
+            return None
+
+        if raw.lower() == "quit":
             return None
 
         path = _normalize_user_path(raw)
         if _is_valid_stata_path(path):
             edition = _infer_edition(path) or _prompt_edition(path)
             return StataInstall(path=path, edition=edition)
-        print(f"  Couldn't find pystata at '{path}'. Try again, or Ctrl+C to quit.")
+        print(f"  Couldn't find pystata at '{path}'. Try again, or type 'quit' to exit.")
 
 
 # ---------------------------------------------------------------------------
