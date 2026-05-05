@@ -86,6 +86,7 @@ class AgentConfig:
     max_tokens: int
     commentary: bool = True
     rigor: str = "colleague"
+    ui: bool = False
 
     @classmethod
     def from_yaml(cls, path: str | Path = "config.yaml") -> "AgentConfig":
@@ -122,6 +123,7 @@ class AgentConfig:
             max_tokens=int(raw.get("max_tokens", 4096)),
             commentary=bool(raw.get("commentary", True)),
             rigor=rigor,
+            ui=bool(raw.get("ui", False)),
         )
 
     def apply_overrides(
@@ -135,6 +137,7 @@ class AgentConfig:
         max_tokens: int | None = None,
         commentary: bool | None = None,
         rigor: str | None = None,
+        ui: bool | None = None,
     ) -> None:
         """Apply CLI overrides on top of the YAML values for this session only.
 
@@ -169,6 +172,8 @@ class AgentConfig:
                     f"Choose one of: {', '.join(sorted(_VALID_RIGOR_LEVELS))}"
                 )
             self.rigor = rigor
+        if ui is not None:
+            self.ui = ui
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +642,21 @@ def main() -> None:
         help="Return raw Stata output only, no interpretation",
     )
 
+    ui_group = parser.add_mutually_exclusive_group()
+    ui_group.add_argument(
+        "--ui",
+        dest="ui",
+        action="store_true",
+        default=None,
+        help="Launch the Streamlit UI instead of the CLI (overrides config.yaml ui setting)",
+    )
+    ui_group.add_argument(
+        "--no-ui",
+        dest="ui",
+        action="store_false",
+        help="Force CLI mode even if config.yaml has ui: true",
+    )
+
     args = parser.parse_args()
 
     # Handle Stata config reset before anything else
@@ -655,10 +675,28 @@ def main() -> None:
             temperature=args.temperature,
             max_tokens=args.max_tokens,
             commentary=args.commentary,
+            ui=args.ui,
         )
     except (FileNotFoundError, ValueError, EnvironmentError) as e:
         print_error(e)
         sys.exit(1)
+
+    # --- UI mode ----------------------------------------------------------
+    if cfg.ui:
+        import subprocess
+        ui_script = Path(__file__).with_name("ui.py")
+        if not ui_script.exists():
+            console.print(f"[red]Error:[/red] ui.py not found at {ui_script}")
+            sys.exit(1)
+        console.print(f"[bold]Launching Streamlit UI...[/bold]  (Ctrl+C to stop)")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "streamlit", "run", str(ui_script)],
+                check=False,
+            )
+        except KeyboardInterrupt:
+            pass
+        return
 
     # --- startup health checks -------------------------------------------
     stata_ok, stata_edition, stata_version, stata_brief = check_stata()

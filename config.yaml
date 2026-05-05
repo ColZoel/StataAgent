@@ -74,6 +74,14 @@ max_tokens: 4096      # maximum tokens in the model's response
 commentary: false
 
 # ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
+# When true, `python main.py` (or `python hf_agent.py`) launches the
+# Streamlit web UI instead of the interactive CLI.
+# Can be overridden per-invocation with --ui / --no-ui CLI flags.
+ui: false
+
+# ---------------------------------------------------------------------------
 # Rigor level
 # ---------------------------------------------------------------------------
 # Controls how much unsolicited methodological commentary the model produces.
