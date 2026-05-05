@@ -1,6 +1,14 @@
 # ui.py — StataAgent Streamlit interface
+import sys
 import streamlit as st
 from pathlib import Path
+
+# Ensure the project directory is on sys.path regardless of how Streamlit
+# was launched (subprocess, streamlit run from another cwd, etc.)
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
 from hf_agent import AgentConfig, build_agent
 from agent import StataContext
 from pydantic_ai.messages import ModelMessage
@@ -94,7 +102,7 @@ def _detect_new_graphs(known: set[Path], workdir: Path) -> list[Path]:
 # ── Session state init ─────────────────────────────────────────────────────
 @st.cache_resource
 def load_config() -> AgentConfig:
-    return AgentConfig.from_yaml("config.yaml")
+    return AgentConfig.from_yaml(_HERE / "config.yaml")
 
 
 cfg = load_config()

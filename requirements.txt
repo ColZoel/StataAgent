@@ -5,3 +5,5 @@ pyyaml>=6.0     # config.yaml parsing
 python-dotenv>=1.0  # load API keys from .env files
 pyfiglet>=1.0   # ASCII art banner
 rich>=13.0      # styled terminal output
+charset_normalizer>=3.0  # required by requests for character detection
+streamlit>=1.35.0  # web UI (used when ui: true in config.yaml)
