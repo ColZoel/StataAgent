@@ -684,20 +684,35 @@ def main() -> None:
     # --- UI mode ----------------------------------------------------------
     if cfg.ui:
         import subprocess
+        import webbrowser
         ui_script = Path(__file__).with_name("ui.py")
         if not ui_script.exists():
             console.print(f"[red]Error:[/red] ui.py not found at {ui_script}")
             sys.exit(1)
         console.print(f"[bold]Launching Streamlit UI...[/bold]  (Ctrl+C to stop)")
         try:
-            subprocess.run(
-                [sys.executable, "-m", "streamlit", "run", str(ui_script)],
+            # --server.headless=true skips Streamlit's first-run email prompt
+            # and disables auto-open-browser. We open the browser ourselves so
+            # users still get the same UX without the prompt hanging the script.
+            proc = subprocess.Popen(
+                [
+                    sys.executable, "-m", "streamlit", "run", "ui.py",
+                    "--server.headless=true",
+                    "--browser.gatherUsageStats=false",
+                ],
                 cwd=str(ui_script.parent),
                 stdin=subprocess.DEVNULL,
-                check=False,
             )
+            try:
+                webbrowser.open("http://localhost:8501")
+            except Exception:
+                pass
+            proc.wait()
         except KeyboardInterrupt:
-            pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         return
 
     # --- startup health checks -------------------------------------------
