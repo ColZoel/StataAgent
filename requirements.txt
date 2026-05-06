@@ -1,9 +1,12 @@
 pydantic-ai>=1.87.0
-pystata  # comes with Stata install (Stata 17+ only)
+pystata~=0.0.1
 pydantic-ai-litellm  # unified LLM provider backend; replaces direct openai SDK dependency
 pyyaml>=6.0     # config.yaml parsing
 python-dotenv>=1.0  # load API keys from .env files
 pyfiglet>=1.0   # ASCII art banner
 rich>=13.0      # styled terminal output
+streamlit~=1.57.0
+pydantic~=2.13.3
+yaml~=0.2.5
 charset_normalizer>=3.0  # required by requests for character detection
 streamlit>=1.35.0  # web UI (used when ui: true in config.yaml)
