@@ -1,17 +1,80 @@
 # ui.py — StataAgent Streamlit interface
-import streamlit as st
+import sys
+import datetime
+import traceback
 from pathlib import Path
-from hf_agent import AgentConfig, build_agent
-from agent import StataContext
-from pydantic_ai.messages import ModelMessage
 
-# ── Page config ────────────────────────────────────────────────────────────
+# ── File-based debug log (always written, regardless of Streamlit's stderr) ─
+_HERE = Path(__file__).resolve().parent
+_DEBUG_LOG = _HERE / ".ui_debug.log"
+
+
+def _dlog(msg: str) -> None:
+    """Append a timestamped line to .ui_debug.log — survives any stderr capture."""
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().isoformat()}] {msg}\n")
+    except Exception:
+        pass
+
+
+# Truncate the log on each fresh script start so old runs don't clutter it
+try:
+    _DEBUG_LOG.write_text("", encoding="utf-8")
+except Exception:
+    pass
+
+_dlog("ui.py started — about to import streamlit")
+
+import streamlit as st
+
+_dlog("streamlit imported")
+
+# ── Page config must be first st.* call ───────────────────────────────────
 st.set_page_config(
     page_title="StataAgent",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+_dlog("set_page_config done")
+
+# Ensure the project directory is on sys.path regardless of how Streamlit
+# was launched (subprocess, streamlit run from another cwd, etc.)
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+# Local imports — wrapped so failures show in the browser rather than producing
+# a blank page. BaseException covers SystemExit raised by sys.exit() in the
+# import chain (e.g. from interactive prompts in config.find_stata).
+_dlog("about to import hf_agent / agent / pydantic_ai")
+try:
+    from hf_agent import AgentConfig, build_agent
+    _dlog("hf_agent imported")
+    from agent import StataContext
+    _dlog("agent imported")
+    from pydantic_ai.messages import ModelMessage
+    _dlog("pydantic_ai.messages imported")
+    _IMPORT_ERROR: BaseException | None = None
+except BaseException as exc:
+    _IMPORT_ERROR = exc
+    _dlog(f"IMPORT FAILED: {type(exc).__name__}: {exc}")
+    _dlog(traceback.format_exc())
+
+if _IMPORT_ERROR is not None:
+    st.error(f"Failed to import StataAgent modules: {type(_IMPORT_ERROR).__name__}")
+    st.exception(_IMPORT_ERROR)
+    st.info(
+        "Common causes on Windows:\n"
+        "- Conda env not activated before launching\n"
+        "- `pydantic-ai` or `pydantic-ai-litellm` not installed\n"
+        "- Stata path not configured: run `python main.py --no-ui` once from the terminal "
+        "to complete interactive Stata discovery, then retry the UI\n"
+        f"\nSee {_DEBUG_LOG} for the full trace."
+    )
+    st.stop()
+
+_dlog("all imports successful — entering main UI body")
 
 # ── Stata blue theme ───────────────────────────────────────────────────────
 st.markdown("""
@@ -60,7 +123,6 @@ def _extract_tool_logs(messages: list) -> list[tuple[str, str]]:
     for msg in messages:
         for part in getattr(msg, "parts", []):
             ptype = type(part).__name__
-            # Tool call — record label and args
             if "ToolCall" in ptype and "Return" not in ptype:
                 tool_name = getattr(part, "tool_name", "")
                 args = getattr(part, "args", {})
@@ -71,7 +133,6 @@ def _extract_tool_logs(messages: list) -> list[tuple[str, str]]:
                 else:
                     cmd = str(args)
                 call_map[getattr(part, "tool_call_id", "")] = (tool_name, str(cmd)[:80])
-            # Tool return — match it up and store
             elif "ToolReturn" in ptype or "ReturnPart" in ptype:
                 cid = getattr(part, "tool_call_id", "")
                 label, cmd = call_map.pop(cid, ("tool", ""))
@@ -91,12 +152,30 @@ def _detect_new_graphs(known: set[Path], workdir: Path) -> list[Path]:
     return found
 
 
-# ── Session state init ─────────────────────────────────────────────────────
+def _get_agent():
+    """Build the agent on first use and cache it in session state."""
+    if "agent" not in st.session_state:
+        with st.spinner("Initialising agent..."):
+            try:
+                st.session_state.agent = build_agent(load_config())
+            except Exception as exc:
+                st.error("Failed to build agent.")
+                st.exception(exc)
+                st.stop()
+    return st.session_state.agent
+
+
+# ── Config (cached across reruns) ──────────────────────────────────────────
 @st.cache_resource
-def load_config() -> AgentConfig:
-    return AgentConfig.from_yaml("config.yaml")
+def load_config() -> "AgentConfig":
+    try:
+        return AgentConfig.from_yaml(_HERE / "config.yaml")
+    except Exception as exc:
+        st.error(f"Could not load config.yaml: {exc}")
+        st.stop()
 
 
+# ── Session state init ─────────────────────────────────────────────────────
 cfg = load_config()
 
 if "ctx" not in st.session_state:
@@ -110,11 +189,9 @@ if "log_buffer" not in st.session_state:
 if "graph_paths" not in st.session_state:
     st.session_state.graph_paths: list[Path] = []
 if "known_graphs" not in st.session_state:
-    st.session_state.known_graphs: set[Path] = set(
-        Path(".").glob("*.png")
-    ) | set(Path(".").glob("*.svg"))
-if "agent" not in st.session_state:
-    st.session_state.agent = build_agent(cfg)
+    st.session_state.known_graphs: set[Path] = (
+        set(_HERE.glob("*.png")) | set(_HERE.glob("*.svg"))
+    )
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────
@@ -172,7 +249,7 @@ with st.sidebar:
     st.divider()
 
     if st.button("🔄 New Session", use_container_width=True):
-        for key in ["ctx", "history", "messages", "log_buffer", "graph_paths", "known_graphs"]:
+        for key in ["ctx", "history", "messages", "log_buffer", "graph_paths", "known_graphs", "agent"]:
             st.session_state.pop(key, None)
         st.rerun()
 
@@ -191,17 +268,24 @@ with chat_tab:
             st.markdown(content)
 
     if prompt := st.chat_input("Ask a question about your data..."):
+        agent = _get_agent()
+
         st.session_state.messages.append(("user", prompt))
         with st.chat_message("user", avatar="🧑‍💻"):
             st.markdown(prompt)
 
         with st.chat_message("assistant", avatar="📊"):
             with st.spinner("Thinking..."):
-                result = st.session_state.agent.run_sync(
-                    prompt,
-                    deps=st.session_state.ctx,
-                    message_history=st.session_state.history,
-                )
+                try:
+                    result = agent.run_sync(
+                        prompt,
+                        deps=st.session_state.ctx,
+                        message_history=st.session_state.history,
+                    )
+                except Exception as exc:
+                    st.error("Agent error — see details below.")
+                    st.exception(exc)
+                    st.stop()
 
             new_messages = result.all_messages()
             st.session_state.history = new_messages
@@ -209,15 +293,10 @@ with chat_tab:
 
             st.markdown(response)
 
-            # Extract any tool logs from this turn
-            prior_count = len(st.session_state.log_buffer)
             new_logs = _extract_tool_logs(new_messages)
             st.session_state.log_buffer.extend(new_logs)
 
-            # Detect graphs written to disk during this turn
-            new_graphs = _detect_new_graphs(
-                st.session_state.known_graphs, Path(".")
-            )
+            new_graphs = _detect_new_graphs(st.session_state.known_graphs, _HERE)
             for g in new_graphs:
                 st.session_state.known_graphs.add(g)
                 st.session_state.graph_paths.append(g)
