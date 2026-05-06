@@ -18,25 +18,31 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 # Local imports after sys.path fix — wrapped so failures show in the browser
-# rather than producing a blank page.
+# rather than producing a blank page. BaseException covers SystemExit raised
+# by `sys.exit()` deep in the import chain (e.g. from interactive prompts in
+# config.find_stata when stdin is unavailable in this subprocess).
+print("[ui.py] Loading StataAgent modules...", file=sys.stderr, flush=True)
 try:
     from hf_agent import AgentConfig, build_agent
     from agent import StataContext
     from pydantic_ai.messages import ModelMessage
-    _IMPORT_ERROR: Exception | None = None
-except Exception as exc:
+    _IMPORT_ERROR: BaseException | None = None
+except BaseException as exc:
     _IMPORT_ERROR = exc
+    print(f"[ui.py] Import failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 if _IMPORT_ERROR is not None:
-    st.error("Failed to import StataAgent modules. See details below.")
+    st.error(f"Failed to import StataAgent modules: {type(_IMPORT_ERROR).__name__}")
     st.exception(_IMPORT_ERROR)
     st.info(
         "Common causes on Windows:\n"
         "- Conda env not activated before launching\n"
         "- `pydantic-ai` or `pydantic-ai-litellm` not installed\n"
-        "- Stata path not configured (run `python main.py` once from the terminal first)"
+        "- Stata path not configured: run `python main.py --no-ui` once from the terminal "
+        "to complete interactive Stata discovery, then retry the UI"
     )
     st.stop()
+print("[ui.py] Modules loaded successfully.", file=sys.stderr, flush=True)
 
 # ── Stata blue theme ───────────────────────────────────────────────────────
 st.markdown("""
