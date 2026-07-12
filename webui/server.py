@@ -492,11 +492,24 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         return FileResponse(p)
 
     # ------------------------------------------------------------------- app
+    _NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
     @app.get("/")
     def index():
-        return FileResponse(_HERE / "static" / "index.html")
+        return FileResponse(_HERE / "static" / "index.html", headers=_NO_CACHE)
 
-    app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
+    # StaticFiles with caching disabled — this is a locally served dev tool,
+    # so revalidate every asset. Prevents stale CSS/JS after a UI update.
+    class NoCacheStatic(StaticFiles):
+        def is_not_modified(self, response_headers, request_headers) -> bool:
+            return False  # never serve a 304; always send fresh bytes
+
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            resp.headers.update(_NO_CACHE)
+            return resp
+
+    app.mount("/static", NoCacheStatic(directory=_HERE / "static"), name="static")
     return app
 
 

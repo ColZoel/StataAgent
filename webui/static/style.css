@@ -475,6 +475,9 @@ button { font: inherit; cursor: pointer; }
   justify-content: center;
   z-index: 100;
 }
+/* The ID rule above would otherwise override the UA [hidden] display:none,
+   leaving the overlay permanently visible. This restores hide-on-attribute. */
+#settings-overlay[hidden] { display: none; }
 
 #settings-modal {
   width: min(620px, calc(100vw - 32px));

@@ -369,6 +369,7 @@ async function openSettings() {
 
   $("#set-model").value = s.model || "";
   $("#set-base-url").value = s.base_url || "";
+  syncBaseUrlVisibility();
   $("#set-temperature").value = s.temperature;
   $("#set-max-tokens").value = s.max_tokens;
   $("#set-commentary").checked = !!s.commentary;
@@ -398,6 +399,13 @@ async function openSettings() {
 }
 
 function closeSettings() { overlay.hidden = true; }
+
+/* Base URL is only meaningful for openai_compatible; hide it otherwise. */
+function syncBaseUrlVisibility() {
+  const show = $("#set-provider").value === "openai_compatible";
+  $("#set-base-url-label").hidden = !show;
+  $("#set-base-url").hidden = !show;
+}
 
 async function saveSettings() {
   const snap = settingsSnapshot || {};
@@ -491,6 +499,7 @@ async function detectStata() {
 }
 
 $("#settings-btn").addEventListener("click", openSettings);
+$("#set-provider").addEventListener("change", syncBaseUrlVisibility);
 $("#settings-close").addEventListener("click", closeSettings);
 $("#settings-save").addEventListener("click", saveSettings);
 $("#detect-btn").addEventListener("click", detectStata);
