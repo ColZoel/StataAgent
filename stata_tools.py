@@ -39,6 +39,38 @@ class StataResult:
     error: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Run observers — callbacks fired after every _run() so UIs can stream the
+# Stata log live. Observer exceptions are swallowed: they must never break
+# an agent run.
+# ---------------------------------------------------------------------------
+from typing import Callable
+
+_RUN_OBSERVERS: list[Callable[[str, "StataResult"], None]] = []
+
+
+def add_run_observer(fn: Callable[[str, "StataResult"], None]) -> None:
+    """Register a callback invoked as fn(code, result) after each Stata run."""
+    if fn not in _RUN_OBSERVERS:
+        _RUN_OBSERVERS.append(fn)
+
+
+def remove_run_observer(fn: Callable[[str, "StataResult"], None]) -> None:
+    """Unregister a previously added run observer."""
+    try:
+        _RUN_OBSERVERS.remove(fn)
+    except ValueError:
+        pass
+
+
+def _notify_observers(code: str, result: "StataResult") -> None:
+    for fn in list(_RUN_OBSERVERS):
+        try:
+            fn(code, result)
+        except Exception:
+            pass
+
+
 def _run(code: str) -> StataResult:
     """Private helper: run arbitrary Stata code and capture output.
 
@@ -62,10 +94,14 @@ def _run(code: str) -> StataResult:
         except Exception:
             log = ""
         output = log or py_output
-        return StataResult(success=True, output=output)
+        result = StataResult(success=True, output=output)
+        _notify_observers(code, result)
+        return result
     except Exception as e:
         py_output = py_buffer.getvalue()
-        return StataResult(success=False, output=py_output, error=str(e))
+        result = StataResult(success=False, output=py_output, error=str(e))
+        _notify_observers(code, result)
+        return result
 
 
 _SYSUSE_DATASETS = {
@@ -100,6 +136,40 @@ def get_varnames() -> list[str]:
         return raw.split()
     except Exception:
         return []
+
+
+def get_variable_meta() -> list[dict]:
+    """Return [{name, type, label, format}] for every variable in memory.
+
+    Uses the sfi Data API (available once pystata is initialized). Returns
+    an empty list if Stata is unavailable or no dataset is loaded.
+    """
+    if not _STATA_OK:
+        return []
+    try:
+        from sfi import Data
+        meta = []
+        for i in range(Data.getVarCount()):
+            meta.append({
+                "name": Data.getVarName(i),
+                "type": Data.getVarType(i),
+                "label": Data.getVarLabel(i) or "",
+                "format": Data.getVarFormat(i) or "",
+            })
+        return meta
+    except Exception:
+        return []
+
+
+def get_obs_count() -> int:
+    """Return the number of observations in memory (0 if unavailable)."""
+    if not _STATA_OK:
+        return 0
+    try:
+        from sfi import Data
+        return int(Data.getObsTotal())
+    except Exception:
+        return 0
 
 
 def get_stata_version() -> str:

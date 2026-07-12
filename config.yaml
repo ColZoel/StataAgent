@@ -48,7 +48,7 @@ model: hyperbolic/meta-llama/Llama-3.3-70B-Instruct  # model name sent in the re
 #   fireworks    → FIREWORKS_API_KEY
 #   groq         → GROQ_API_KEY
 #   ollama       → null
-api_key_env: HF_TOKEN
+api_key_env: "HF_TOKEN"
 
 # ---------------------------------------------------------------------------
 # Base URL (optional override)
@@ -61,7 +61,7 @@ base_url: null
 # ---------------------------------------------------------------------------
 # Generation parameters
 # ---------------------------------------------------------------------------
-temperature: 0.3      # lower = more deterministic; good for data analysis
+temperature: 0.3
 max_tokens: 4096      # maximum tokens in the model's response
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ commentary: false
 # UI
 # ---------------------------------------------------------------------------
 # When true, `python main.py` (or `python hf_agent.py`) launches the
-# Streamlit web UI instead of the interactive CLI.
+# web UI instead of the interactive CLI.
 # Can be overridden per-invocation with --ui / --no-ui CLI flags.
 ui: false
 

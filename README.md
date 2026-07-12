@@ -95,6 +95,22 @@ export NSCALE_API_KEY=<your-key>   # or whichever variable api_key_env points to
 
 ## Usage
 
+### Web UI
+
+```bash
+python web.py                 # serves http://127.0.0.1:8765 and opens a browser tab
+# or equivalently:
+python main.py --ui           # same UI, launched through the main entry point
+```
+
+The UI mirrors the Stata desktop layout — Results and Command windows in the
+center, a Review (history) pane on the left, and Variables / Graphs /
+Properties on the right. Stata output streams into the Results window live as
+each command executes, and any graphs written to the working directory are
+picked up automatically.
+
+### CLI
+
 ```bash
 python main.py
 # or, with overrides:
