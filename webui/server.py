@@ -53,6 +53,11 @@ from dotenv import dotenv_values
 _GRAPH_EXTS = (".png", ".svg", ".pdf")
 _VALID_RIGOR = {"silent", "colleague", "reviewer", "journal_editor"}
 
+# Default generation parameters — mirror AgentConfig.from_yaml's fallbacks.
+# The UI's "Reset to defaults" targets these values.
+_DEFAULT_TEMPERATURE = 0.3
+_DEFAULT_MAX_TOKENS = 4096
+
 
 # Request bodies. These must live at module level: with
 # `from __future__ import annotations`, FastAPI resolves the string
@@ -324,6 +329,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         saved = _saved_stata_config()
         stata_ok = s.stata_status[0]
         return {
+            "version": __version__,
             "provider": s.cfg.provider,
             "providers": sorted(_LITELLM_PREFIXES),
             "model": s.cfg.model,
@@ -333,6 +339,10 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             "temperature": s.cfg.temperature,
             "max_tokens": s.cfg.max_tokens,
             "commentary": s.cfg.commentary,
+            "defaults": {
+                "temperature": _DEFAULT_TEMPERATURE,
+                "max_tokens": _DEFAULT_MAX_TOKENS,
+            },
             "stata": {
                 "path": saved.get("stata_path") or "",
                 "edition": saved.get("stata_edition") or "",
@@ -356,6 +366,39 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 for p in found
             ]
         }
+
+    @app.get("/api/update-check")
+    def update_check():
+        """Query GitHub for the latest release and compare with this version.
+
+        status is one of: 'update' (newer available), 'current' (up to date),
+        'error' (could not reach GitHub / parse the response).
+        """
+        import urllib.error
+        import urllib.request
+        from hf_agent import _GITHUB_RELEASES_URL, _version_gt
+
+        try:
+            req = urllib.request.Request(
+                _GITHUB_RELEASES_URL,
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": f"StataAgent/{__version__}"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            latest = str(data.get("tag_name", "")).lstrip("v")
+            if not latest:
+                return {"current": __version__, "status": "none"}
+            if _version_gt(latest, __version__):
+                return {"current": __version__, "latest": latest, "status": "update"}
+            return {"current": __version__, "latest": latest, "status": "current"}
+        except urllib.error.HTTPError as exc:
+            # 404 from releases/latest means the repo has no published releases.
+            if exc.code == 404:
+                return {"current": __version__, "status": "none"}
+            return {"current": __version__, "status": "error", "error": str(exc)}
+        except Exception as exc:
+            return {"current": __version__, "status": "error", "error": str(exc)}
 
     @app.post("/api/settings")
     def save_settings(body: SettingsIn):

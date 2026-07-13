@@ -373,6 +373,8 @@ async function openSettings() {
   $("#set-temperature").value = s.temperature;
   $("#set-max-tokens").value = s.max_tokens;
   $("#set-commentary").checked = !!s.commentary;
+  collapseAdvanced();
+  syncResetButton();
 
   $("#set-key-env").value = s.api_key_env || "";
   $("#set-api-key").value = "";
@@ -390,6 +392,10 @@ async function openSettings() {
       : "") +
     "Changing the Stata path takes effect after restarting StataAgent.";
 
+  $("#about-version").textContent = "v" + s.version;
+  $("#about-year").textContent = new Date().getFullYear();
+  collapseAbout();
+
   const msg = $("#settings-msg");
   msg.textContent = "";
   msg.className = "settings-msg";
@@ -405,6 +411,86 @@ function syncBaseUrlVisibility() {
   const show = $("#set-provider").value === "openai_compatible";
   $("#set-base-url-label").hidden = !show;
   $("#set-base-url").hidden = !show;
+}
+
+/* ── Advanced Model Settings disclosure ─────────────────────────────── */
+function collapseAdvanced() {
+  $("#advanced-body").hidden = true;
+  $("#advanced-toggle").setAttribute("aria-expanded", "false");
+}
+
+function toggleAdvanced() {
+  const body = $("#advanced-body");
+  const open = body.hidden;
+  body.hidden = !open;
+  $("#advanced-toggle").setAttribute("aria-expanded", String(open));
+}
+
+/* Enable "Reset to defaults" only when a parameter differs from its default. */
+function syncResetButton() {
+  const d = settingsSnapshot?.defaults || { temperature: 0.3, max_tokens: 4096 };
+  const temp = parseFloat($("#set-temperature").value);
+  const maxTok = parseInt($("#set-max-tokens").value, 10);
+  const adjusted =
+    (!Number.isNaN(temp) && temp !== d.temperature) ||
+    (!Number.isNaN(maxTok) && maxTok !== d.max_tokens);
+  $("#reset-params-btn").disabled = !adjusted;
+}
+
+function resetParams() {
+  const d = settingsSnapshot?.defaults || { temperature: 0.3, max_tokens: 4096 };
+  $("#set-temperature").value = d.temperature;
+  $("#set-max-tokens").value = d.max_tokens;
+  syncResetButton();
+}
+
+/* ── About StataAgent ───────────────────────────────────────────────── */
+function collapseAbout() {
+  $("#about-body").hidden = true;
+  $("#about-toggle").setAttribute("aria-expanded", "false");
+  $("#issue-choice").hidden = true;
+  $("#update-status").hidden = true;
+}
+
+function toggleAbout() {
+  const body = $("#about-body");
+  const open = body.hidden;
+  body.hidden = !open;
+  $("#about-toggle").setAttribute("aria-expanded", String(open));
+}
+
+async function checkForUpdates() {
+  const out = $("#update-status");
+  const btn = $("#check-update-btn");
+  out.hidden = false;
+  out.className = "about-note dim";
+  out.textContent = "Checking…";
+  btn.disabled = true;
+  try {
+    const d = await (await fetch("/api/update-check")).json();
+    if (d.status === "update") {
+      out.className = "about-note warn";
+      out.innerHTML =
+        `Version <strong>v${esc(d.latest)}</strong> is available ` +
+        `(you have v${esc(d.current)}). ` +
+        `<a href="https://github.com/ColZoel/StataAgent/releases/latest" ` +
+        `target="_blank" rel="noopener">Release notes</a>`;
+    } else if (d.status === "current") {
+      out.className = "about-note ok";
+      out.textContent = `You’re on the latest version (v${d.current}).`;
+    } else if (d.status === "none") {
+      out.className = "about-note dim";
+      out.textContent = `No published releases to compare against yet (you have v${d.current}).`;
+    } else {
+      out.className = "about-note dim";
+      out.textContent = "Couldn’t reach GitHub to check for updates.";
+    }
+  } catch {
+    out.className = "about-note dim";
+    out.textContent = "Couldn’t reach GitHub to check for updates.";
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function saveSettings() {
@@ -503,6 +589,16 @@ $("#set-provider").addEventListener("change", syncBaseUrlVisibility);
 $("#settings-close").addEventListener("click", closeSettings);
 $("#settings-save").addEventListener("click", saveSettings);
 $("#detect-btn").addEventListener("click", detectStata);
+$("#advanced-toggle").addEventListener("click", toggleAdvanced);
+$("#reset-params-btn").addEventListener("click", resetParams);
+$("#set-temperature").addEventListener("input", syncResetButton);
+$("#set-max-tokens").addEventListener("input", syncResetButton);
+$("#about-toggle").addEventListener("click", toggleAbout);
+$("#check-update-btn").addEventListener("click", checkForUpdates);
+$("#submit-issue-btn").addEventListener("click", () => {
+  const box = $("#issue-choice");
+  box.hidden = !box.hidden;
+});
 overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSettings(); });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !overlay.hidden) closeSettings();

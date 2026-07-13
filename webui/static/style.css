@@ -564,6 +564,114 @@ button { font: inherit; cursor: pointer; }
   margin: 8px 0 0;
   line-height: 1.5;
 }
+.form-hint.warn {
+  color: var(--stata-maroon);
+  background: color-mix(in srgb, var(--stata-maroon) 8%, transparent);
+  border-left: 3px solid var(--stata-maroon);
+  border-radius: 0 6px 6px 0;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+[data-theme="dark"] .form-hint.warn { color: #e08b90; }
+
+/* Advanced Model Settings disclosure */
+.advanced { margin-top: 14px; }
+.advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  color: var(--stata-blue);
+  font: 600 12px var(--sans);
+  padding: 4px 0;
+}
+.advanced-toggle:hover { text-decoration: underline; }
+.advanced-toggle .caret {
+  display: inline-block;
+  transition: transform .15s ease;
+  font-size: 10px;
+}
+.advanced-toggle[aria-expanded="true"] .caret { transform: rotate(90deg); }
+.advanced-body {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--chip-bg);
+}
+.advanced-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* About StataAgent */
+.about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.about-note {
+  font-size: 12px;
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+.about-note.ok { color: var(--ok); }
+.about-note.warn { color: var(--stata-maroon); }
+[data-theme="dark"] .about-note.warn { color: #e08b90; }
+.about-note.dim { color: var(--text-dim); }
+
+.about-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  font-size: 13px;
+}
+.about-links a { color: var(--stata-blue); text-decoration: none; }
+.about-links a:hover { text-decoration: underline; }
+.about-links .sep { color: var(--text-dim); }
+.linklike {
+  border: none;
+  background: none;
+  color: var(--stata-blue);
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+.linklike:hover { text-decoration: underline; }
+
+.issue-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--pane-bg);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.issue-choice .btn { text-decoration: none; padding: 4px 12px; }
+
+.about-legal {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.about-legal p {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+}
+.about-legal p:last-child { margin-bottom: 0; }
 .form-hint code {
   font: 11px var(--mono);
   background: var(--code-bg);

@@ -137,17 +137,37 @@
           <input id="set-base-url" type="text" spellcheck="false"
                  placeholder="e.g. https://inference.nscale.com/v1">
 
-          <label for="set-temperature">Temperature</label>
-          <input id="set-temperature" type="number" min="0" max="2" step="0.05">
-
-          <label for="set-max-tokens">Max tokens</label>
-          <input id="set-max-tokens" type="number" min="1" step="256">
-
           <label for="set-commentary">Commentary</label>
           <label class="check-wrap">
             <input id="set-commentary" type="checkbox">
             <span>Explain results in plain language after Stata output</span>
           </label>
+        </div>
+
+        <div class="advanced">
+          <button type="button" id="advanced-toggle" class="advanced-toggle"
+                  aria-expanded="false" aria-controls="advanced-body">
+            <span class="caret">▸</span> Advanced Model Settings
+          </button>
+          <div id="advanced-body" class="advanced-body" hidden>
+            <p class="form-hint warn">
+              ⚠ These control how the model generates text. Only change them if
+              you know what you're doing — bad values can produce truncated,
+              incoherent, or failed responses.
+            </p>
+            <div class="form-grid">
+              <label for="set-temperature">Temperature</label>
+              <input id="set-temperature" type="number" min="0" max="2" step="0.05">
+
+              <label for="set-max-tokens">Max tokens</label>
+              <input id="set-max-tokens" type="number" min="1" step="256">
+            </div>
+            <div class="advanced-actions">
+              <button type="button" id="reset-params-btn" class="btn" disabled>
+                Reset to defaults
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -187,6 +207,43 @@
         </div>
         <div id="detect-results" class="detect-results" hidden></div>
         <p class="form-hint" id="stata-hint"></p>
+      </section>
+
+      <section class="settings-section">
+        <div class="advanced">
+          <button type="button" id="about-toggle" class="advanced-toggle"
+                  aria-expanded="false" aria-controls="about-body">
+            <span class="caret">▸</span> About StataAgent
+          </button>
+          <div id="about-body" class="advanced-body about-body" hidden>
+
+            <div class="about-row">
+              <span>StataAgent <strong id="about-version">v—</strong></span>
+              <button type="button" id="check-update-btn" class="btn">Check for updates</button>
+            </div>
+            <p id="update-status" class="about-note" hidden></p>
+
+            <div class="about-links">
+              <a href="https://github.com/ColZoel/StataAgent" target="_blank" rel="noopener">GitHub repository</a>
+              <span class="sep">·</span>
+              <a href="https://github.com/ColZoel/StataAgent#readme" target="_blank" rel="noopener">README</a>
+              <span class="sep">·</span>
+              <button type="button" id="submit-issue-btn" class="linklike">Submit an issue</button>
+            </div>
+            <div id="issue-choice" class="issue-choice" hidden>
+              <span>Report via:</span>
+              <a class="btn" href="https://github.com/ColZoel/StataAgent/issues/new" target="_blank" rel="noopener">GitHub issue</a>
+              <a class="btn" href="mailto:contact@collinzoeller.com?subject=StataAgent%20issue">Email</a>
+            </div>
+
+            <div class="about-legal">
+              <p>© <span id="about-year">2026</span> Collin Zoeller. Released under the project’s repository license.</p>
+              <p>Stata® and StataCorp® are registered trademarks of StataCorp LLC. StataAgent is an independent project and is not affiliated with, endorsed by, or sponsored by StataCorp LLC.</p>
+              <p>Built with the help of artificial intelligence and verified by a human.</p>
+            </div>
+
+          </div>
+        </div>
       </section>
 
     </div>
