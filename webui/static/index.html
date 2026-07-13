@@ -67,6 +67,7 @@
           <button class="example">regress price on mpg and weight with robust SEs</button>
           <button class="example">tabulate foreign by rep78</button>
         </div>
+        <div class="welcome-hint">…or drag &amp; drop a <code>.dta</code> or <code>.do</code> file anywhere</div>
       </div>
     </div>
 
@@ -112,6 +113,15 @@
   </aside>
 
 </main>
+
+<!-- Drag-and-drop overlay -->
+<div id="drop-overlay" hidden>
+  <div class="drop-box">
+    <div class="drop-icon">⇣</div>
+    <div class="drop-title">Drop files to add them to the session</div>
+    <div class="drop-sub"><code>.dta</code> loads into Stata &nbsp;·&nbsp; <code>.do</code> is attached as context</div>
+  </div>
+</div>
 
 <!-- Settings modal -->
 <div id="settings-overlay" hidden>

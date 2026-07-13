@@ -24,6 +24,7 @@ import os
 import queue
 import re
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -32,7 +33,7 @@ _ROOT = _HERE.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -44,6 +45,8 @@ from stata_tools import (
     check_stata,
     get_obs_count,
     get_variable_meta,
+    get_varnames,
+    load_dataset,
     remove_run_observer,
 )
 import config as stata_config
@@ -173,6 +176,10 @@ class Session:
         self.busy = False
         self.known_graphs: set[Path] = self._scan_graphs()
         self.stata_status = check_stata()  # (ok, edition, version, brief)
+        # Drag-and-drop support: uploaded files land here, and notes about
+        # them are prepended to the next query so the model has the context.
+        self.upload_dir = Path(tempfile.mkdtemp(prefix="stataagent-uploads-"))
+        self.context_notes: list[str] = []
 
     @staticmethod
     def _scan_graphs() -> set[Path]:
@@ -194,10 +201,16 @@ class Session:
                 self.agent_error = f"{type(exc).__name__}: {exc}"
         return self.agent
 
+    def take_context_notes(self) -> list[str]:
+        """Return and clear pending context notes (from dropped files)."""
+        notes, self.context_notes = self.context_notes, []
+        return notes
+
     def reset(self):
         self.ctx = StataContext(rigor=self.cfg.rigor)
         self.history = []
         self.known_graphs = self._scan_graphs()
+        self.context_notes = []
 
 
 SESSION: Session | None = None
@@ -264,6 +277,7 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         def worker():
             s.busy = True
             add_run_observer(observer)
+            notes: list[str] = []
             try:
                 agent = s.ensure_agent()
                 if agent is None:
@@ -272,8 +286,14 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                         "message": f"Agent could not be initialised: {s.agent_error}",
                     })
                     return
+                # Prepend any pending drag-and-drop context (loaded datasets,
+                # attached do-files) so the model knows about them.
+                notes = s.take_context_notes()
+                full_prompt = (
+                    "\n\n".join(notes) + f"\n\n{prompt}" if notes else prompt
+                )
                 result = agent.run_sync(
-                    prompt, deps=s.ctx, message_history=s.history
+                    full_prompt, deps=s.ctx, message_history=s.history
                 )
                 s.history = result.all_messages()
                 text = getattr(result, "output", None)
@@ -285,6 +305,9 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                     "graphs": [p.name for p in s.new_graphs()],
                 })
             except Exception as exc:
+                # Restore unconsumed context so a transient failure doesn't
+                # silently drop the user's attached files.
+                s.context_notes = notes + s.context_notes
                 events.put({
                     "type": "error",
                     "message": f"{type(exc).__name__}: {exc}",
@@ -310,6 +333,120 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # ----------------------------------------------------------------- upload
+    # Drag-and-drop files, Stata-GUI style: a .dta is loaded into memory
+    # immediately (like dropping it on Stata); a .do file is attached as
+    # context for the model's next turn. The file arrives as a raw request
+    # body (?filename=...) to avoid a multipart dependency.
+    _UPLOAD_LIMITS = {
+        ".dta": 512 * 1024 * 1024,   # 512 MB
+        ".do": 1 * 1024 * 1024,      # 1 MB — do-files are code, keep them sane
+    }
+    _DO_CONTEXT_CHARS = 100_000      # cap of do-file text passed to the model
+
+    @app.post("/api/upload")
+    async def upload(request: Request, filename: str):
+        s = SESSION
+        name = Path(filename).name.strip()
+        ext = Path(name).suffix.lower()
+        if not name or ext not in _UPLOAD_LIMITS:
+            return JSONResponse(
+                {"error": "Only .dta and .do files are supported."},
+                status_code=400,
+            )
+
+        body = await request.body()
+        if not body:
+            return JSONResponse({"error": "Empty file."}, status_code=400)
+        if len(body) > _UPLOAD_LIMITS[ext]:
+            limit_mb = _UPLOAD_LIMITS[ext] // (1024 * 1024)
+            return JSONResponse(
+                {"error": f"{name} is too large (limit {limit_mb} MB for {ext})."},
+                status_code=413,
+            )
+
+        # Save under a collision-free name in the session upload dir.
+        target = s.upload_dir / name
+        counter = 1
+        while target.exists():
+            target = s.upload_dir / f"{Path(name).stem}_{counter}{ext}"
+            counter += 1
+        target.write_bytes(body)
+
+        # ---- .do: attach contents as context for the next turn -----------
+        if ext == ".do":
+            text = body.decode("utf-8", errors="replace")
+            truncated = len(text) > _DO_CONTEXT_CHARS
+            context_text = text[:_DO_CONTEXT_CHARS]
+            s.context_notes.append(
+                f'[Attached file] The user attached the Stata do-file '
+                f'"{target.name}" (saved at {target}) as context:\n'
+                f"```stata\n{context_text}\n```"
+                + ("\n(Contents truncated for length.)" if truncated else "")
+            )
+            lines = text.splitlines()
+            return {
+                "kind": "do",
+                "name": target.name,
+                "success": True,
+                "lines": len(lines),
+                "preview": "\n".join(lines[:12]),
+                "truncated": truncated,
+                "message": f"{target.name} attached — its contents will be "
+                           "shared with the agent on your next question.",
+            }
+
+        # ---- .dta: load into Stata now (serialized with queries) ---------
+        if not s.stata_status[0]:
+            return {
+                "kind": "dta",
+                "name": target.name,
+                "success": False,
+                "code": f'use "{target}", clear',
+                "log": "",
+                "error": "Stata is not available on this machine — check the "
+                         "Stata path in Settings and restart StataAgent.",
+            }
+        if not s.lock.acquire(blocking=False):
+            return JSONResponse(
+                {"error": "A query is running — try again when it finishes."},
+                status_code=409,
+            )
+        try:
+            s.busy = True
+            code = f'use "{target}", clear'
+            result = load_dataset(str(target))
+            if not result.success:
+                return {
+                    "kind": "dta",
+                    "name": target.name,
+                    "success": False,
+                    "code": code,
+                    "log": result.output,
+                    "error": result.error,
+                }
+            s.ctx.dataset_loaded = True
+            s.ctx.dataset_path = str(target)
+            try:
+                s.ctx.varnames = set(get_varnames())
+            except Exception:
+                pass
+            s.context_notes.append(
+                f'[Loaded dataset] The user loaded "{target.name}" by '
+                f"drag-and-drop (path: {target}). It is now in Stata memory; "
+                "call describe_dataset to inspect it before analysis."
+            )
+            return {
+                "kind": "dta",
+                "name": target.name,
+                "success": True,
+                "code": code,
+                "log": result.output,
+            }
+        finally:
+            s.busy = False
+            s.lock.release()
 
     # ------------------------------------------------------------------ rigor
     @app.post("/api/rigor")

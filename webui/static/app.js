@@ -292,6 +292,115 @@ async function runQuery(prompt) {
   }
 }
 
+/* ── drag-and-drop (.dta loads into Stata, .do attaches as context) ──── */
+let dragDepth = 0;
+
+function dragHasFiles(e) {
+  return [...(e.dataTransfer?.types || [])].includes("Files");
+}
+
+document.addEventListener("dragenter", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth++;
+  $("#drop-overlay").hidden = false;
+});
+document.addEventListener("dragover", (e) => {
+  if (dragHasFiles(e)) e.preventDefault();
+});
+document.addEventListener("dragleave", (e) => {
+  if (!dragHasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) $("#drop-overlay").hidden = true;
+});
+document.addEventListener("drop", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  $("#drop-overlay").hidden = true;
+  handleDroppedFiles([...e.dataTransfer.files]);
+});
+
+function fileEntry(name) {
+  $("#welcome")?.remove();
+  const entry = el("div", "entry");
+  const echo = el("div", "file-echo");
+  echo.textContent = `📎 ${name}`;
+  entry.appendChild(echo);
+  const spin = el("div", "running",
+    '<span class="spinner"></span><span>uploading…</span>');
+  entry.appendChild(spin);
+  results.appendChild(entry);
+  scrollToBottom();
+  return entry;
+}
+
+async function handleDroppedFiles(files) {
+  for (const f of files) {
+    const ext = f.name.toLowerCase().slice(f.name.lastIndexOf("."));
+    const entry = fileEntry(f.name);
+    if (ext !== ".dta" && ext !== ".do") {
+      entry.querySelector(".running")?.remove();
+      addError(entry, "Only .dta and .do files are supported.");
+      continue;
+    }
+    if (busy) {
+      entry.querySelector(".running")?.remove();
+      addError(entry, "A query is running — drop the file again when it finishes.");
+      continue;
+    }
+    await uploadFile(f, entry);   // sequential: Stata is a single instance
+  }
+}
+
+async function uploadFile(f, entry) {
+  try {
+    const resp = await fetch(
+      `/api/upload?filename=${encodeURIComponent(f.name)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: f,
+      },
+    );
+    const d = await resp.json();
+    if (!resp.ok) {
+      addError(entry, d.error || `Upload failed (${resp.status})`);
+      return;
+    }
+    if (d.kind === "dta") {
+      addStataBlock(entry, {
+        code: d.code,
+        output: d.log,
+        success: d.success,
+        error: d.error,
+      });
+      if (d.success) {
+        const note = el("div", "attach-card",
+          `<div class="attach-note">Dataset loaded — the Variables pane is ` +
+          `updated and the agent will be told with your next question.</div>`);
+        entry.insertBefore(note, entry.querySelector(".running"));
+      }
+    } else if (d.kind === "do") {
+      const card = el("div", "attach-card");
+      card.innerHTML =
+        `<div>📄 <strong>${esc(d.name)}</strong> attached ` +
+        `(${d.lines} line${d.lines === 1 ? "" : "s"}` +
+        `${d.truncated ? ", truncated for context" : ""})</div>` +
+        `<div class="attach-note">Its contents will be shared with the agent ` +
+        `on your next question — try “explain this do-file” or “run this”.</div>` +
+        (d.preview ? `<pre>${esc(d.preview)}</pre>` : "");
+      entry.insertBefore(card, entry.querySelector(".running"));
+    }
+    scrollToBottom();
+  } catch (err) {
+    addError(entry, "Upload failed: " + err.message);
+  } finally {
+    entry.querySelector(".running")?.remove();
+    refreshState();
+  }
+}
+
 /* ── command window behavior ────────────────────────────────────────── */
 function autosize() {
   input.style.height = "auto";

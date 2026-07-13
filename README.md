@@ -109,6 +109,11 @@ Properties on the right. Stata output streams into the Results window live as
 each command executes, and any graphs written to the working directory are
 picked up automatically.
 
+Drag and drop files anywhere in the window, Stata-GUI style: a `.dta` file is
+loaded into Stata immediately (the `use` log appears in the Results window and
+the Variables pane updates), and a `.do` file is attached as context for the
+agent's next turn — ask "explain this do-file" or "run this".
+
 ### CLI
 
 ```bash
