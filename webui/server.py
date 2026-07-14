@@ -26,6 +26,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -44,6 +45,7 @@ from stata_tools import (
     add_run_observer,
     check_stata,
     get_obs_count,
+    get_stata_cwd,
     get_variable_meta,
     get_varnames,
     load_dataset,
@@ -174,24 +176,68 @@ class Session:
         self.ctx = StataContext(rigor=cfg.rigor)
         self.history: list = []
         self.busy = False
-        self.known_graphs: set[Path] = self._scan_graphs()
         self.stata_status = check_stata()  # (ok, edition, version, brief)
         # Drag-and-drop support: uploaded files land here, and notes about
         # them are prepended to the next query so the model has the context.
         self.upload_dir = Path(tempfile.mkdtemp(prefix="stataagent-uploads-"))
         self.context_notes: list[str] = []
+        # Conversation size (for the UI meter): completed turns, and the raw
+        # model-message count — the true proxy for context growth, since it
+        # includes tool calls and their Stata logs.
+        self.turn_count = 0
+        # Graph tracking: watch the project root AND Stata's own cwd (which
+        # the agent can change with `cd`). Files are served by registry name,
+        # never by path lookup.
+        self.session_started = time.time()
+        self.stata_cwd: str | None = get_stata_cwd()
+        self.graph_registry: dict[str, Path] = {}
+        self.known_graphs: set[Path] = self._scan_graphs()
 
-    @staticmethod
-    def _scan_graphs() -> set[Path]:
+    def refresh_stata_cwd(self, force: bool = False) -> str | None:
+        """Re-read c(pwd). Skipped while busy (Stata is single-threaded)
+        unless force=True — the query worker forces it since it holds the lock."""
+        if force or not self.busy:
+            cwd = get_stata_cwd()
+            if cwd:
+                self.stata_cwd = cwd
+        return self.stata_cwd
+
+    def _graph_dirs(self) -> list[Path]:
+        dirs = [_ROOT]
+        if self.stata_cwd:
+            p = Path(self.stata_cwd)
+            if p.is_dir() and p != _ROOT:
+                dirs.append(p)
+        return dirs
+
+    def _scan_graphs(self) -> set[Path]:
         found: set[Path] = set()
-        for ext in _GRAPH_EXTS:
-            found |= set(_ROOT.glob(f"*{ext}"))
+        for d in self._graph_dirs():
+            for ext in _GRAPH_EXTS:
+                found |= set(d.glob(f"*{ext}"))
         return found
 
-    def new_graphs(self) -> list[Path]:
-        fresh = [p for p in self._scan_graphs() if p not in self.known_graphs]
-        self.known_graphs |= set(fresh)
-        return sorted(fresh)
+    def new_graphs(self) -> list[str]:
+        """Register graphs that appeared since the last scan; return their
+        registry names. Files predating the session are ignored so that
+        watching a newly cd'd directory doesn't flood the UI with old plots."""
+        names: list[str] = []
+        for p in sorted(self._scan_graphs()):
+            if p in self.known_graphs:
+                continue
+            self.known_graphs.add(p)
+            try:
+                if p.stat().st_mtime < self.session_started:
+                    continue
+            except OSError:
+                continue
+            name, counter = p.name, 1
+            while name in self.graph_registry and self.graph_registry[name] != p:
+                name = f"{p.stem}_{counter}{p.suffix}"
+                counter += 1
+            self.graph_registry[name] = p
+            names.append(name)
+        return names
 
     def ensure_agent(self):
         if self.agent is None and self.agent_error is None:
@@ -211,6 +257,7 @@ class Session:
         self.history = []
         self.known_graphs = self._scan_graphs()
         self.context_notes = []
+        self.turn_count = 0
 
 
 SESSION: Session | None = None
@@ -249,6 +296,11 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 "obs": get_obs_count() if s.ctx.dataset_loaded else 0,
             },
             "variables": get_variable_meta() if s.ctx.dataset_loaded else [],
+            "cwd": s.refresh_stata_cwd() or str(_ROOT),
+            "conversation": {
+                "turns": s.turn_count,
+                "messages": len(s.history),
+            },
         }
 
     # ------------------------------------------------------------------ query
@@ -296,13 +348,17 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                     full_prompt, deps=s.ctx, message_history=s.history
                 )
                 s.history = result.all_messages()
+                s.turn_count += 1
+                # The agent may have cd'd Stata elsewhere; follow it so graph
+                # exports in the new directory are picked up.
+                s.refresh_stata_cwd(force=True)
                 text = getattr(result, "output", None)
                 if text is None:
                     text = getattr(result, "data", "")
                 events.put({
                     "type": "response",
                     "text": str(text),
-                    "graphs": [p.name for p in s.new_graphs()],
+                    "graphs": s.new_graphs(),
                 })
             except Exception as exc:
                 # Restore unconsumed context so a transient failure doesn't
@@ -666,8 +722,10 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
     # ----------------------------------------------------------------- graphs
     @app.get("/api/graph/{name}")
     def graph(name: str):
-        p = (_ROOT / Path(name).name).resolve()
-        if p.parent != _ROOT or p.suffix.lower() not in _GRAPH_EXTS or not p.exists():
+        # Served strictly from the session registry — no filesystem lookup,
+        # so there is nothing to traverse.
+        p = SESSION.graph_registry.get(name)
+        if p is None or not p.exists():
             return JSONResponse({"error": "Not found."}, status_code=404)
         return FileResponse(p)
 

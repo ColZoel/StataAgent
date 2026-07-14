@@ -275,7 +275,13 @@ def build_agent(cfg: AgentConfig) -> Agent[StataContext, str]:
             "   structured tools (e.g. xtreg, margins, xtset).\n"
             f"{commentary_instruction}\n"
             "6. If a command fails, read the error, fix it, and retry once. "
-            "   If it fails again, tell the user clearly what went wrong."
+            "   If it fails again, tell the user clearly what went wrong.\n"
+            "7. Graphs: Stata runs headless here, so a graph the user can see "
+            "   exists ONLY if you export it. After ANY command that draws a "
+            "   graph (scatter, histogram, twoway, graph bar, ...), immediately "
+            '   run: graph export "<short_descriptive_name>.png", replace '
+            "   width(1200) — in the same run_stata call. Never skip the "
+            "   export; an unexported graph is invisible to the user."
         ),
     )
 

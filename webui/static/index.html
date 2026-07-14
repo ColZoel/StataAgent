@@ -57,6 +57,10 @@
 
   <!-- Center: Results window + Command window -->
   <section id="center-pane">
+    <div id="conv-bar">
+      <span class="conv-pill" id="conv-pill"
+            title="The full conversation — including Stata logs from every tool call — is resent to the model with each message. Start a New Session to shrink context and cost.">new conversation</span>
+    </div>
     <div id="results" class="results">
       <div class="welcome" id="welcome">
         <div class="welcome-title">StataAgent</div>
@@ -108,6 +112,7 @@
         <dt>Observations</dt><dd id="prop-obs">—</dd>
         <dt>Variables</dt><dd id="prop-vars">—</dd>
         <dt>File</dt><dd id="prop-file">—</dd>
+        <dt>Working dir</dt><dd id="prop-cwd">—</dd>
       </dl>
     </div>
   </aside>

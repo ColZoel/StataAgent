@@ -161,6 +161,24 @@ def get_variable_meta() -> list[dict]:
         return []
 
 
+def get_stata_cwd() -> str | None:
+    """Return Stata's current working directory (c(pwd)), or None.
+
+    Reads c(pwd) through a throwaway global because sfi.Macro cannot read
+    c() values directly and locals don't survive across stata.run calls.
+    """
+    if not _STATA_OK:
+        return None
+    try:
+        from sfi import Macro
+        stata.run("global __stataagent_pwd \"`c(pwd)'\"", echo=False)
+        pwd = Macro.getGlobal("__stataagent_pwd") or None
+        stata.run("macro drop __stataagent_pwd", echo=False)
+        return pwd
+    except Exception:
+        return None
+
+
 def get_obs_count() -> int:
     """Return the number of observations in memory (0 if unavailable)."""
     if not _STATA_OK:

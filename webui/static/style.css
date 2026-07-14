@@ -192,6 +192,29 @@ button { font: inherit; cursor: pointer; }
   min-height: 0;
 }
 
+/* conversation-size meter above the Results window */
+#conv-bar {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: -4px;   /* tuck it close to the results pane */
+}
+.conv-pill {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--pane-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  cursor: default;
+  white-space: nowrap;
+}
+.conv-pill.warn {
+  color: #b45309;
+  border-color: #b45309;
+  background: color-mix(in srgb, #b45309 8%, var(--pane-bg));
+}
+
 .results {
   flex: 1;
   background: var(--results-bg);

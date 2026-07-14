@@ -235,9 +235,25 @@ async function refreshState() {
 
   $("#prop-obs").textContent = s.dataset.loaded ? s.dataset.obs.toLocaleString() : "—";
   $("#prop-vars").textContent = s.dataset.loaded ? vars.length : "—";
-  const f = s.dataset.path ? s.dataset.path.split("/").pop() : "—";
+  const f = s.dataset.path ? s.dataset.path.split(/[\\/]/).pop() : "—";
   $("#prop-file").textContent = f;
   $("#prop-file").title = s.dataset.path || "";
+
+  // working directory: show the tail, keep the full path in the tooltip
+  const cwd = s.cwd || "";
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
+  $("#prop-cwd").textContent = cwd
+    ? (parts.length > 2 ? "…/" + parts.slice(-2).join("/") : cwd)
+    : "—";
+  $("#prop-cwd").title = cwd;
+
+  // conversation-size meter
+  const conv = s.conversation || { turns: 0, messages: 0 };
+  const pill = $("#conv-pill");
+  pill.textContent = conv.messages
+    ? `${conv.turns} turn${conv.turns === 1 ? "" : "s"} · ${conv.messages} messages in context`
+    : "new conversation";
+  pill.classList.toggle("warn", conv.messages >= 60);
 }
 
 /* ── query execution (SSE over fetch) ───────────────────────────────── */
