@@ -460,18 +460,211 @@ $("#rigor-select").addEventListener("change", async (e) => {
   });
 });
 
-$("#reset-btn").addEventListener("click", async () => {
+async function newSession() {
   if (busy) return;
   if (!confirm("Start a new session? The conversation and dataset context will be cleared.")) return;
   await fetch("/api/reset", { method: "POST" });
   location.reload();
-});
+}
 
-$("#theme-btn").addEventListener("click", () => {
+function toggleTheme() {
   const root = document.documentElement;
   const next = root.dataset.theme === "dark" ? "light" : "dark";
   root.dataset.theme = next;
   localStorage.setItem("stataagent-theme", next);
+}
+
+$("#reset-btn").addEventListener("click", newSession);
+$("#theme-btn").addEventListener("click", toggleTheme);
+
+/* ── toast ──────────────────────────────────────────────────────────── */
+let toastTimer = null;
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+}
+
+/* ── menu bar ───────────────────────────────────────────────────────── */
+function closeAllMenus() {
+  document.querySelectorAll(".menu-drop").forEach((d) => { d.hidden = true; });
+}
+
+document.querySelectorAll(".menu-title").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const drop = btn.nextElementSibling;
+    const wasHidden = drop.hidden;
+    closeAllMenus();
+    drop.hidden = !wasHidden;
+  });
+});
+document.addEventListener("click", closeAllMenus);
+
+/* ── do-file export ─────────────────────────────────────────────────── */
+async function downloadDofile(mode) {
+  try {
+    const resp = await fetch(`/api/export/dofile?mode=${mode}`);
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      toast(d.error || "Export failed.");
+      return;
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="([^"]+)"/);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? m[1] : "stataagent-session.do";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    toast("Export failed: " + err.message);
+  }
+}
+
+/* ── session save / restore ─────────────────────────────────────────── */
+async function saveSession() {
+  try {
+    const resp = await fetch("/api/sessions/save", { method: "POST" });
+    const d = await resp.json();
+    if (!resp.ok) { toast(d.error || "Save failed."); return; }
+    toast(`Session saved — “${d.name}”` +
+      (d.history_saved ? "" : " (model memory could not be saved)"));
+  } catch (err) {
+    toast("Save failed: " + err.message);
+  }
+}
+
+const sessionsOverlay = $("#sessions-overlay");
+
+function sessionRow(sess) {
+  const row = el("div", "session-row");
+  const meta = [
+    sess.saved_at ? sess.saved_at.replace("T", " ") : "",
+    `${sess.turns} turn${sess.turns === 1 ? "" : "s"}`,
+    sess.dataset ? `dataset: ${sess.dataset}` : null,
+  ].filter(Boolean).join(" · ");
+  row.innerHTML =
+    `<div class="session-info">` +
+    `<div class="session-name">${esc(sess.name)}</div>` +
+    `<div class="session-meta">${esc(meta)}</div></div>`;
+
+  const restoreBtn = el("button", "btn primary", "Restore");
+  restoreBtn.onclick = () => restoreSession(sess.id);
+  const deleteBtn = el("button", "btn danger", "Delete");
+  deleteBtn.onclick = async () => {
+    if (!confirm(`Delete saved session “${sess.name}”? This cannot be undone.`)) return;
+    const resp = await fetch(`/api/sessions/${encodeURIComponent(sess.id)}`,
+      { method: "DELETE" });
+    if (resp.ok) { row.remove(); toast("Session deleted."); refreshSessionsEmpty(); }
+    else toast("Delete failed.");
+  };
+  row.appendChild(restoreBtn);
+  row.appendChild(deleteBtn);
+  return row;
+}
+
+function refreshSessionsEmpty() {
+  $("#sessions-empty").hidden = !!$("#sessions-list").children.length;
+}
+
+async function openSessionsModal() {
+  const list = $("#sessions-list");
+  list.innerHTML = "";
+  try {
+    const d = await (await fetch("/api/sessions")).json();
+    for (const sess of d.sessions) list.appendChild(sessionRow(sess));
+  } catch {
+    toast("Could not load saved sessions.");
+    return;
+  }
+  refreshSessionsEmpty();
+  sessionsOverlay.hidden = false;
+}
+
+function closeSessionsModal() { sessionsOverlay.hidden = true; }
+
+async function restoreSession(id) {
+  try {
+    const resp = await fetch("/api/sessions/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) { toast(d.error || "Restore failed."); return; }
+    closeSessionsModal();
+    renderTranscript(d.transcript || []);
+    toast(`Session restored — “${d.name}”` +
+      (d.notes?.length ? `. ${d.notes.join(" ")}` : ""));
+  } catch (err) {
+    toast("Restore failed: " + err.message);
+  }
+}
+
+/* Rebuild the Results window, Review pane, and Graphs tab from a saved
+   transcript. Entry grouping mirrors the live stream: each user prompt or
+   dropped file opens a new entry; stata/response/error events attach to it. */
+function renderTranscript(transcript) {
+  results.innerHTML = "";
+  cmdHistory = [];
+  histCursor = -1;
+  $("#history-list").innerHTML = "";
+  $("#history-empty").hidden = false;
+  $("#graph-grid").innerHTML = "";
+  graphCount = 0;
+  $("#graph-count").hidden = true;
+  $("#graphs-empty").hidden = false;
+
+  let entry = null;
+  const ensureEntry = () => {
+    if (!entry) { entry = el("div", "entry"); results.appendChild(entry); }
+    return entry;
+  };
+  for (const ev of transcript) {
+    if (ev.type === "user") {
+      entry = el("div", "entry");
+      const echo = el("div", "user-echo");
+      echo.textContent = ev.text;
+      entry.appendChild(echo);
+      results.appendChild(entry);
+      cmdHistory.push(ev.text);
+    } else if (ev.type === "file") {
+      entry = el("div", "entry");
+      const echo = el("div", "file-echo");
+      echo.textContent = `📎 ${ev.name}`;
+      entry.appendChild(echo);
+      if (ev.kind === "do" && ev.preview) {
+        entry.appendChild(el("div", "attach-card",
+          `<div>📄 <strong>${esc(ev.name)}</strong> attached</div>` +
+          `<pre>${esc(ev.preview)}</pre>`));
+      }
+      results.appendChild(entry);
+    } else if (ev.type === "stata") {
+      addStataBlock(ensureEntry(), ev);
+    } else if (ev.type === "response") {
+      if (ev.text) addCommentary(ensureEntry(), ev.text);
+      if (ev.graphs?.length) addGraphs(ensureEntry(), ev.graphs);
+    } else if (ev.type === "error") {
+      addError(ensureEntry(), ev.message || "Error");
+    }
+  }
+  scrollToBottom();
+  refreshState();
+}
+
+$("#menu-save-session").addEventListener("click", saveSession);
+$("#menu-restore-session").addEventListener("click", openSessionsModal);
+$("#menu-export-commands").addEventListener("click", () => downloadDofile("commands"));
+$("#menu-export-full").addEventListener("click", () => downloadDofile("full"));
+$("#menu-new-session").addEventListener("click", newSession);
+$("#menu-theme").addEventListener("click", toggleTheme);
+$("#sessions-close").addEventListener("click", closeSessionsModal);
+sessionsOverlay.addEventListener("click", (e) => {
+  if (e.target === sessionsOverlay) closeSessionsModal();
 });
 
 /* ── settings modal ─────────────────────────────────────────────────── */
@@ -709,7 +902,7 @@ async function detectStata() {
   }
 }
 
-$("#settings-btn").addEventListener("click", openSettings);
+$("#menu-settings").addEventListener("click", openSettings);
 $("#set-provider").addEventListener("change", syncBaseUrlVisibility);
 $("#settings-close").addEventListener("click", closeSettings);
 $("#settings-save").addEventListener("click", saveSettings);
@@ -726,7 +919,11 @@ $("#submit-issue-btn").addEventListener("click", () => {
 });
 overlay.addEventListener("click", (e) => { if (e.target === overlay) closeSettings(); });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !overlay.hidden) closeSettings();
+  if (e.key === "Escape") {
+    if (!overlay.hidden) closeSettings();
+    if (!sessionsOverlay.hidden) closeSessionsModal();
+    closeAllMenus();
+  }
 });
 
 /* ── right-pane tabs + variable filter ──────────────────────────────── */

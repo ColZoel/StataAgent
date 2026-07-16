@@ -488,6 +488,116 @@ button { font: inherit; cursor: pointer; }
 .properties dt { color: var(--text-dim); }
 .properties dd { margin: 0; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ── Menu bar ────────────────────────────────────────────────────────── */
+#menubar {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px;
+  background: var(--pane-bg);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.menu { position: relative; }
+.menu-title {
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 6px 6px 0 0;
+}
+.menu-title:hover { background: var(--hover); color: var(--stata-blue); }
+.menu-drop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 150;
+  min-width: 280px;
+  background: var(--pane-bg);
+  border: 1px solid var(--border);
+  border-radius: 0 8px 8px 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+}
+.menu-drop[hidden] { display: none; }
+.menu-item {
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.menu-item:hover { background: var(--hover); color: var(--stata-blue); }
+.menu-sep { height: 1px; background: var(--border); margin: 4px 8px; }
+
+/* ── Sessions modal ──────────────────────────────────────────────────── */
+#sessions-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 20, 30, .45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#sessions-overlay[hidden] { display: none; }
+#sessions-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  background: var(--pane-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .3);
+  display: flex;
+  flex-direction: column;
+}
+.sessions-body { overflow-y: auto; padding: 10px 14px 14px; }
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  margin-bottom: 8px;
+}
+.session-info { flex: 1; min-width: 0; }
+.session-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.session-row .btn.danger { color: var(--error); border-color: var(--error); }
+.session-row .btn.danger:hover {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+#toast {
+  position: fixed;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  background: var(--pane-bg);
+  color: var(--text);
+  border: 1px solid var(--stata-blue);
+  border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+  padding: 9px 18px;
+  font-size: 13px;
+  max-width: min(560px, calc(100vw - 40px));
+}
+#toast[hidden] { display: none; }
+
 /* ── Drag-and-drop ───────────────────────────────────────────────────── */
 #drop-overlay {
   position: fixed;

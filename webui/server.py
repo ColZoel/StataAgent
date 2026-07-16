@@ -25,8 +25,10 @@ import queue
 import re
 import sys
 import tempfile
+import textwrap
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -35,7 +37,12 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -74,6 +81,14 @@ class QueryIn(BaseModel):
 
 class RigorIn(BaseModel):
     level: str
+
+
+class SessionIdIn(BaseModel):
+    id: str
+
+
+_SESSIONS_DIR = Path.home() / ".stataagent" / "sessions"
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class SettingsIn(BaseModel):
@@ -185,6 +200,11 @@ class Session:
         # model-message count — the true proxy for context growth, since it
         # includes tool calls and their Stata logs.
         self.turn_count = 0
+        # Ordered record of everything that happened (user prompts, Stata
+        # commands + logs, model responses, attached files, errors). Drives
+        # do-file export and session save/restore.
+        self.transcript: list[dict] = []
+        self.save_id: str | None = None   # set on first save; reused after
         # Graph tracking: watch the project root AND Stata's own cwd (which
         # the agent can change with `cd`). Files are served by registry name,
         # never by path lookup.
@@ -258,6 +278,8 @@ class Session:
         self.known_graphs = self._scan_graphs()
         self.context_notes = []
         self.turn_count = 0
+        self.transcript = []
+        self.save_id = None
 
 
 SESSION: Session | None = None
@@ -318,25 +340,30 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         events: queue.Queue = queue.Queue()
 
         def observer(code, result):
-            events.put({
+            ev = {
                 "type": "stata",
                 "code": code,
                 "output": result.output,
                 "success": result.success,
                 "error": result.error,
-            })
+            }
+            s.transcript.append(ev)
+            events.put(ev)
 
         def worker():
             s.busy = True
             add_run_observer(observer)
+            s.transcript.append({"type": "user", "text": prompt})
             notes: list[str] = []
             try:
                 agent = s.ensure_agent()
                 if agent is None:
-                    events.put({
+                    ev = {
                         "type": "error",
                         "message": f"Agent could not be initialised: {s.agent_error}",
-                    })
+                    }
+                    s.transcript.append(ev)
+                    events.put(ev)
                     return
                 # Prepend any pending drag-and-drop context (loaded datasets,
                 # attached do-files) so the model knows about them.
@@ -355,19 +382,23 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 text = getattr(result, "output", None)
                 if text is None:
                     text = getattr(result, "data", "")
-                events.put({
+                ev = {
                     "type": "response",
                     "text": str(text),
                     "graphs": s.new_graphs(),
-                })
+                }
+                s.transcript.append(ev)
+                events.put(ev)
             except Exception as exc:
                 # Restore unconsumed context so a transient failure doesn't
                 # silently drop the user's attached files.
                 s.context_notes = notes + s.context_notes
-                events.put({
+                ev = {
                     "type": "error",
                     "message": f"{type(exc).__name__}: {exc}",
-                })
+                }
+                s.transcript.append(ev)
+                events.put(ev)
             finally:
                 remove_run_observer(observer)
                 s.busy = False
@@ -442,6 +473,13 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
                 + ("\n(Contents truncated for length.)" if truncated else "")
             )
             lines = text.splitlines()
+            s.transcript.append({
+                "type": "file",
+                "kind": "do",
+                "name": target.name,
+                "lines": len(lines),
+                "preview": "\n".join(lines[:12]),
+            })
             return {
                 "kind": "do",
                 "name": target.name,
@@ -472,7 +510,17 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
         try:
             s.busy = True
             code = f'use "{target}", clear'
+            s.transcript.append(
+                {"type": "file", "kind": "dta", "name": target.name}
+            )
             result = load_dataset(str(target))
+            s.transcript.append({
+                "type": "stata",
+                "code": code,
+                "output": result.output,
+                "success": result.success,
+                "error": result.error,
+            })
             if not result.success:
                 return {
                     "kind": "dta",
@@ -707,6 +755,245 @@ def create_app(cfg: AgentConfig | None = None) -> FastAPI:
             messages.append("Nothing to save.")
         return {"ok": True, "restart_required": restart_required,
                 "messages": messages}
+
+    # ---------------------------------------------------------- do-file export
+    def _comment_lines(text: str, width: int = 76) -> list[str]:
+        """Wrap arbitrary text as Stata * comments."""
+        out: list[str] = []
+        for para in text.splitlines():
+            if not para.strip():
+                out.append("*")
+                continue
+            for line in textwrap.wrap(para, width=width) or [""]:
+                out.append(f"* {line}")
+        return out
+
+    @app.get("/api/export/dofile")
+    def export_dofile(mode: str = "commands"):
+        if mode not in ("commands", "full"):
+            return JSONResponse(
+                {"error": "mode must be 'commands' or 'full'."}, status_code=400
+            )
+        s = SESSION
+        if not s.transcript:
+            return JSONResponse(
+                {"error": "Nothing to export yet."}, status_code=400
+            )
+        stamp = datetime.now()
+        lines: list[str] = [
+            "*" + "=" * 71,
+            f"* StataAgent session — exported {stamp:%Y-%m-%d %H:%M}",
+            f"* Mode: {'commands only' if mode == 'commands' else 'full conversation'}",
+            f"* Model: {s.cfg.provider}/{s.cfg.model}",
+            "*" + "=" * 71,
+            "",
+        ]
+
+        def add_stata(ev: dict) -> None:
+            if ev.get("success"):
+                lines.append(ev["code"])
+            else:
+                lines.append("* (failed — kept for reference)")
+                for code_line in ev["code"].splitlines():
+                    lines.append(f"* {code_line}")
+            lines.append("")
+
+        if mode == "commands":
+            stata_events = [e for e in s.transcript if e["type"] == "stata"]
+            if not stata_events:
+                return JSONResponse(
+                    {"error": "No Stata commands have been run yet."},
+                    status_code=400,
+                )
+            for ev in stata_events:
+                add_stata(ev)
+        else:
+            for ev in s.transcript:
+                kind = ev["type"]
+                if kind == "user":
+                    lines.append("*" + "-" * 71)
+                    lines.extend(_comment_lines("> " + ev["text"]))
+                    lines.append("")
+                elif kind == "stata":
+                    add_stata(ev)
+                elif kind == "response":
+                    lines.extend(_comment_lines(ev.get("text", "")))
+                    lines.append("")
+                elif kind == "file":
+                    lines.append(f"* [attached file: {ev.get('name', '?')}]")
+                    lines.append("")
+                elif kind == "error":
+                    lines.extend(_comment_lines("ERROR: " + ev.get("message", "")))
+                    lines.append("")
+
+        fname = f"stataagent-{stamp:%Y%m%d-%H%M%S}.do"
+        return PlainTextResponse(
+            "\n".join(lines).rstrip() + "\n",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    # --------------------------------------------------------------- sessions
+    def _serialize_history(history: list):
+        """Best-effort JSON form of the pydantic-ai message history."""
+        try:
+            from pydantic_ai.messages import ModelMessagesTypeAdapter
+            return json.loads(ModelMessagesTypeAdapter.dump_json(history))
+        except Exception:
+            return None
+
+    def _deserialize_history(data):
+        try:
+            from pydantic_ai.messages import ModelMessagesTypeAdapter
+            return ModelMessagesTypeAdapter.validate_python(data)
+        except Exception:
+            return None
+
+    @app.post("/api/sessions/save")
+    def save_session():
+        s = SESSION
+        if s.busy:
+            return JSONResponse(
+                {"error": "Cannot save while a query is running."}, status_code=409
+            )
+        if not s.transcript:
+            return JSONResponse(
+                {"error": "Nothing to save yet."}, status_code=400
+            )
+        if not s.save_id:
+            s.save_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        first_user = next(
+            (e["text"] for e in s.transcript if e["type"] == "user"), ""
+        ).strip()
+        name = (first_user[:48] + "…") if len(first_user) > 48 else (
+            first_user or "Untitled session"
+        )
+        history_data = _serialize_history(s.history)
+        payload = {
+            "id": s.save_id,
+            "name": name,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "turns": s.turn_count,
+            "rigor": s.ctx.rigor,
+            "dataset_path": s.ctx.dataset_path,
+            "transcript": s.transcript,
+            "context_notes": s.context_notes,
+            "graph_registry": {k: str(v) for k, v in s.graph_registry.items()},
+            "history": history_data,
+        }
+        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        (_SESSIONS_DIR / f"{s.save_id}.json").write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        return {
+            "ok": True,
+            "id": s.save_id,
+            "name": name,
+            "history_saved": history_data is not None,
+        }
+
+    @app.get("/api/sessions")
+    def list_sessions():
+        sessions = []
+        if _SESSIONS_DIR.is_dir():
+            for f in sorted(_SESSIONS_DIR.glob("*.json"), reverse=True):
+                try:
+                    d = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                sessions.append({
+                    "id": d.get("id", f.stem),
+                    "name": d.get("name", "Untitled session"),
+                    "saved_at": d.get("saved_at", ""),
+                    "turns": d.get("turns", 0),
+                    "dataset": (Path(d["dataset_path"]).name
+                                if d.get("dataset_path") else None),
+                })
+        return {"sessions": sessions}
+
+    @app.post("/api/sessions/restore")
+    def restore_session(body: SessionIdIn):
+        s = SESSION
+        if s.busy:
+            return JSONResponse(
+                {"error": "Cannot restore while a query is running."},
+                status_code=409,
+            )
+        if not _SESSION_ID_RE.match(body.id):
+            return JSONResponse({"error": "Invalid session id."}, status_code=400)
+        f = _SESSIONS_DIR / f"{body.id}.json"
+        if not f.exists():
+            return JSONResponse({"error": "Session not found."}, status_code=404)
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return JSONResponse(
+                {"error": f"Could not read session file: {exc}"}, status_code=500
+            )
+
+        notes: list[str] = []
+        s.reset()
+        s.transcript = d.get("transcript", [])
+        s.context_notes = d.get("context_notes", [])
+        s.turn_count = d.get("turns", 0)
+        s.ctx.rigor = d.get("rigor", s.cfg.rigor)
+        s.save_id = d.get("id", body.id)
+
+        # Re-register graphs whose files still exist.
+        for gname, gpath in (d.get("graph_registry") or {}).items():
+            p = Path(gpath)
+            if p.exists():
+                s.graph_registry[gname] = p
+                s.known_graphs.add(p)
+
+        history = _deserialize_history(d.get("history"))
+        if history is not None:
+            s.history = history
+        elif d.get("history") is not None:
+            notes.append("Model memory could not be restored; the transcript "
+                         "is intact but the model starts fresh.")
+
+        # Best-effort: put the dataset back into Stata memory.
+        dpath = d.get("dataset_path")
+        if dpath:
+            if s.stata_status[0] and Path(dpath).exists():
+                with s.lock:
+                    s.busy = True
+                    try:
+                        result = load_dataset(dpath)
+                    finally:
+                        s.busy = False
+                if result.success:
+                    s.ctx.dataset_loaded = True
+                    s.ctx.dataset_path = dpath
+                    try:
+                        s.ctx.varnames = set(get_varnames())
+                    except Exception:
+                        pass
+                else:
+                    notes.append(f"Dataset could not be reloaded: {result.error}")
+            else:
+                notes.append(
+                    "Dataset was not reloaded "
+                    + ("(file no longer exists)." if not Path(dpath).exists()
+                       else "(Stata unavailable).")
+                )
+
+        return {
+            "ok": True,
+            "name": d.get("name", ""),
+            "transcript": s.transcript,
+            "notes": notes,
+        }
+
+    @app.delete("/api/sessions/{sid}")
+    def delete_session(sid: str):
+        if not _SESSION_ID_RE.match(sid):
+            return JSONResponse({"error": "Invalid session id."}, status_code=400)
+        f = _SESSIONS_DIR / f"{sid}.json"
+        if not f.exists():
+            return JSONResponse({"error": "Session not found."}, status_code=404)
+        f.unlink()
+        return {"ok": True}
 
     # ------------------------------------------------------------------ reset
     @app.post("/api/reset")

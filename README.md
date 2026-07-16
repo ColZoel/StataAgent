@@ -114,6 +114,17 @@ loaded into Stata immediately (the `use` log appears in the Results window and
 the Variables pane updates), and a `.do` file is attached as context for the
 agent's next turn — ask "explain this do-file" or "run this".
 
+The **File** menu adds reproducibility features:
+
+- **Export do-file** — turn the session into a runnable `.do` file, either
+  commands only or the full conversation with your questions and the agent's
+  commentary as comments.
+- **Save / Restore session** — snapshot the conversation (transcript, model
+  memory, attached-file context, and dataset reference) to
+  `~/.stataagent/sessions/` and pick it back up later; restoring reloads the
+  dataset into Stata when the file still exists. Old sessions can be deleted
+  from the same dialog.
+
 ### CLI
 
 ```bash

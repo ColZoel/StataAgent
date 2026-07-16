@@ -40,11 +40,33 @@
         <option value="journal_editor">journal editor</option>
       </select>
     </label>
-    <button class="btn ghost" id="settings-btn" title="Settings">⚙</button>
     <button class="btn ghost" id="theme-btn" title="Toggle light / dark">◐</button>
     <button class="btn" id="reset-btn" title="Clear conversation and dataset context">New session</button>
   </div>
 </header>
+
+<!-- Menu bar (desktop-app style) -->
+<nav id="menubar">
+  <div class="menu">
+    <button class="menu-title" type="button">File</button>
+    <div class="menu-drop" hidden>
+      <button class="menu-item" id="menu-save-session">Save session</button>
+      <button class="menu-item" id="menu-restore-session">Restore session…</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" id="menu-export-commands">Export do-file — commands only</button>
+      <button class="menu-item" id="menu-export-full">Export do-file — with conversation</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" id="menu-new-session">New session</button>
+    </div>
+  </div>
+  <div class="menu">
+    <button class="menu-title" type="button">Settings</button>
+    <div class="menu-drop" hidden>
+      <button class="menu-item" id="menu-settings">Settings…</button>
+      <button class="menu-item" id="menu-theme">Toggle light / dark</button>
+    </div>
+  </div>
+</nav>
 
 <main id="workspace">
 
@@ -269,6 +291,25 @@
     </div>
   </div>
 </div>
+
+<!-- Saved-sessions modal -->
+<div id="sessions-overlay" hidden>
+  <div id="sessions-modal" role="dialog" aria-label="Saved sessions">
+    <div class="settings-head">
+      <h2>Saved Sessions</h2>
+      <button id="sessions-close" class="btn ghost" title="Close">✕</button>
+    </div>
+    <div class="sessions-body">
+      <div id="sessions-list"></div>
+      <div class="pane-empty" id="sessions-empty" hidden>
+        No saved sessions yet. Use <strong>File → Save session</strong> to keep this one.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- transient toast -->
+<div id="toast" hidden></div>
 
 <script src="/static/app.js"></script>
 </body>
