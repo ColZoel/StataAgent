@@ -134,13 +134,25 @@ def _infer_edition(path: Path) -> str | None:
 # Interactive prompts
 # ---------------------------------------------------------------------------
 
+def _stdin_is_interactive() -> bool:
+    """True when a human can answer prompts. Headless contexts (the web UI,
+    CI, preview harnesses) must never block on input()."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except Exception:
+        return False
+
+
 def _prompt_edition(path: Path) -> str:
     """Ask the user which edition is installed at *path*.
 
     Pre-fills the default with whatever can be inferred from the path name,
-    falling back to 'se' if the path is ambiguous.
+    falling back to 'se' if the path is ambiguous. In non-interactive
+    contexts the default is returned without prompting.
     """
     default = _infer_edition(path) or "se"
+    if not _stdin_is_interactive():
+        return default
     print(f"\nWhich Stata edition is installed at '{path.parent}'?")
     print("  be  —  Stata/BE  (Basic Edition)")
     print("  se  —  Stata/SE  (Standard Edition)")
@@ -158,7 +170,12 @@ def _prompt_edition(path: Path) -> str:
 
 
 def _prompt_choice(installs: list[Path]) -> StataInstall:
-    """Ask the user to choose among multiple detected Stata installations."""
+    """Ask the user to choose among multiple detected Stata installations.
+
+    In non-interactive contexts the first detected install is used."""
+    if not _stdin_is_interactive():
+        chosen = installs[0]
+        return StataInstall(path=chosen, edition=_infer_edition(chosen) or "se")
     print("\nFound multiple Stata installations:")
     for i, path in enumerate(installs, 1):
         inferred = _infer_edition(path)
@@ -229,7 +246,13 @@ def _autodetect() -> list[Path]:
 
 
 def _interactive_prompt() -> StataInstall | None:
-    """Strategy 4: ask the user for the utilities path, then the edition."""
+    """Strategy 4: ask the user for the utilities path, then the edition.
+
+    Skipped entirely in non-interactive contexts (web UI, CI): blocking on
+    input() there would hang the process. The caller treats None as
+    'Stata not configured' and the UI surfaces it in Settings."""
+    if not _stdin_is_interactive():
+        return None
     print("\nStataAgent could not automatically find your Stata installation.")
     print("Please enter the path to your Stata 'utilities' folder.")
     print("Examples:")
