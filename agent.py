@@ -37,6 +37,15 @@ from stata_tools import (
     ppmlhdfe,
     run_raw_stata,
     set_stata_locale,
+    eststo,
+    esttab,
+    merge_datasets,
+    merge_report,
+    append_datasets,
+    ivregress,
+    ivreghdfe,
+    margins_effects,
+    marginsplot_cmd,
 )
 
 
@@ -98,6 +107,7 @@ class StataContext:
     analysis_phase: str = "idle"   # idle | clarify | executing | reflecting
     current_plan: AnalysisPlan | None = None
     plan_version: int = 0          # increments with each amendment
+    stored_estimates: list[str] = field(default_factory=list)  # names passed to store_estimation
 
 
 # The agent itself. 'claude-sonnet-4-5' is a reasonable default;
@@ -216,7 +226,31 @@ def _build_system_prompt(commentary: bool = True) -> str:
         "      Call reflect_on_results to store the reflection in context.\n"
         "15. Rigor level: the active level is injected dynamically. Adjust the depth\n"
         "    of unsolicited commentary, assumption checking, and MODE 3 reflection\n"
-        "    accordingly. Use set_rigor if the user asks to change level mid-session."
+        "    accordingly. Use set_rigor if the user asks to change level mid-session.\n"
+        "16. Estimation tables: when the user wants to compare specifications side by\n"
+        "    side, call store_estimation immediately after each regression to include\n"
+        "    (run_regression, run_hdfe_regression, run_iv_regression, etc.), then call\n"
+        "    build_estimation_table once all specs are stored. Requires the 'estout'\n"
+        "    package — check install_stata_package(\"estout\") first if unsure.\n"
+        "17. Merging and appending: before running merge_dataset, ask the user for the\n"
+        "    match relationship (1:1, 1:m, m:1, m:m) if it isn't obvious, and always\n"
+        "    call check_merge_quality immediately after — report the match breakdown\n"
+        "    (matched / master-only / using-only) before proceeding with analysis.\n"
+        "    Use append_dataset instead when stacking observations from datasets with\n"
+        "    the same variables rather than matching on keys.\n"
+        "18. Instrumental variables: use run_iv_regression for endogenous regressors.\n"
+        "    Before calling, sanity-check the exclusion restriction against the research\n"
+        "    question, and check install_stata_package(\"ivreghdfe\") if absorb is set.\n"
+        "    At REVIEWER rigor and above, request or run first-stage/weak-instrument\n"
+        "    diagnostics (e.g. estat firststage) before treating estimates as reliable.\n"
+        "    Use compute_margins for marginal effects/adjusted predictions after any\n"
+        "    regression (it uses the last estimation in memory) and plot_margins to\n"
+        "    export a marginsplot — pystata is headless, so always give plot_margins an\n"
+        "    export_path ending in .png.\n"
+        "19. Weighted data: run_regression and summarize_vars accept weight_type\n"
+        "    (\"aweight\", \"pweight\", \"fweight\", or \"iweight\") and weight_var. Ask the\n"
+        "    user which weight variable and type applies for survey/complex-sample data\n"
+        "    rather than guessing — pweight is typical for survey sampling weights."
     )
 
 
@@ -312,13 +346,20 @@ def summarize_vars(
     ctx: RunContext[StataContext],
     varlist: str = "",
     detail: bool = False,
+    condition: str | None = None,
+    weight_type: str | None = None,
+    weight_var: str | None = None,
 ) -> str:
     """Compute descriptive statistics (mean, SD, min, max) for variables.
     Leave varlist empty to summarize all numeric variables. Set detail=True
-    for percentiles and skewness."""
+    for percentiles and skewness.
+
+    weight_type: "aweight", "pweight", "fweight", or "iweight" — set together
+        with weight_var for survey/complex-sample data.
+    """
     if err := _require_dataset(ctx):
         return err
-    result = summarize(varlist, detail)
+    result = summarize(varlist, detail, condition, weight_type, weight_var)
     return result.output if result.success else f"Error: {result.error}"
 
 
@@ -342,12 +383,19 @@ def run_regression(
     independents: list[str],
     robust: bool = False,
     condition: str | None = None,
+    weight_type: str | None = None,
+    weight_var: str | None = None,
 ) -> str:
     """Run an OLS regression. 'condition' is an optional 'if' clause
-    (e.g., 'age > 25'). Set robust=True for heteroskedasticity-robust SEs."""
+    (e.g., 'age > 25'). Set robust=True for heteroskedasticity-robust SEs.
+
+    weight_type: "aweight", "pweight", "fweight", or "iweight" — set together
+        with weight_var. Ask the user rather than guessing for survey data;
+        pweight is typical for sampling weights.
+    """
     if err := _require_dataset(ctx):
         return err
-    result = regress(dependent, independents, robust, condition)
+    result = regress(dependent, independents, robust, condition, weight_type, weight_var)
     return result.output if result.success else f"Error: {result.error}"
 
 
@@ -719,6 +767,215 @@ def run_hdfe_regression(
             "Must be 'continuous' (reghdfe) or 'count' (ppmlhdfe)."
         )
     return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def store_estimation(ctx: RunContext[StataContext], name: str) -> str:
+    """Store the most recently run estimation (regress, reghdfe, ivregress, etc.)
+    under a name, for later inclusion in a side-by-side table via
+    build_estimation_table. Call this right after each regression you want
+    to compare.
+
+    name: short identifier, e.g. "m1", "baseline", "with_fe".
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = eststo(name)
+    if not result.success:
+        return f"Error: {result.error}"
+    if name not in ctx.deps.stored_estimates:
+        ctx.deps.stored_estimates.append(name)
+    return f"Stored estimation as '{name}'. Stored so far: {', '.join(ctx.deps.stored_estimates)}"
+
+
+@agent.tool
+def build_estimation_table(
+    ctx: RunContext[StataContext],
+    models: list[str] | None = None,
+    export_path: str | None = None,
+    stats: str | None = None,
+    title: str | None = None,
+) -> str:
+    """Render a side-by-side regression table from estimations previously
+    saved with store_estimation, via esttab. Requires the 'estout' package —
+    call install_stata_package("estout") first if unsure it's installed.
+
+    models: names previously passed to store_estimation, in display order.
+        Omit to include every estimation stored so far.
+    export_path: file path ending in .tex, .rtf, .csv, or .html to export
+        the table (.rtf opens in Word). Omit to print to Results only.
+    stats: space-separated summary stat rows, e.g. "N r2 r2_a". Defaults to
+        observation count and R-squared.
+    title: optional table title.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    use_models = models if models else ctx.deps.stored_estimates
+    if not use_models:
+        return "No stored estimations. Call store_estimation after each regression to include."
+    result = esttab(use_models, export_path, stats=stats or "N r2 r2_a", title=title)
+    if not result.success:
+        return f"Error: {result.error}"
+    if export_path:
+        return f"{result.output}\n\nTable exported to {export_path}."
+    return result.output
+
+
+@agent.tool
+def merge_dataset(
+    ctx: RunContext[StataContext],
+    merge_type: str,
+    keyvars: str,
+    using: str,
+    generate: str = "_merge",
+    keep: str | None = None,
+    update: bool = False,
+    replace: bool = False,
+    force: bool = False,
+) -> str:
+    """Merge another dataset into memory on shared key variables (Stata's
+    merge command). ALWAYS call check_merge_quality immediately afterward
+    and report the match breakdown before proceeding — don't assume a clean
+    merge.
+
+    merge_type: "1:1", "1:m", "m:1", or "m:m" — the match relationship
+        between the in-memory (master) data and the using dataset.
+    keyvars: space-separated key variable(s) present in both datasets.
+    using: path to the using .dta file.
+    generate: name for the match-status variable. Errors if this variable
+        already exists from a prior merge — drop it first or pick a new name.
+    keep: restrict to result codes, e.g. "3" (matched only) or
+        "match master using" — decide using check_merge_quality's output.
+    update/replace: fill in or overwrite missing values from using.
+    force: allow the merge when variable storage types conflict.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = merge_datasets(merge_type, keyvars, using, generate, keep, update, replace, force)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def check_merge_quality(ctx: RunContext[StataContext], generate: str = "_merge") -> str:
+    """Tabulate the merge match-status variable to show how many observations
+    matched, were master-only, or using-only. Call this immediately after
+    merge_dataset."""
+    if err := _require_dataset(ctx):
+        return err
+    result = merge_report(generate)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def append_dataset(
+    ctx: RunContext[StataContext],
+    using: list[str],
+    generate: str | None = None,
+    keep: str | None = None,
+    force: bool = False,
+) -> str:
+    """Append (stack) one or more datasets below the data in memory (Stata's
+    append command). Use this instead of merge_dataset when stacking
+    observations from datasets with the same variables, rather than
+    matching on key variables.
+
+    using: path(s) to .dta files to append.
+    generate: variable to mark source (1 = master, 2+ = each using file,
+        in the order given).
+    keep: restrict to specific variables.
+    force: allow appending across string/numeric type mismatches.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = append_datasets(using, generate, keep, force)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def run_iv_regression(
+    ctx: RunContext[StataContext],
+    estimator: str,
+    dependent: str,
+    exogenous: list[str],
+    endogenous: list[str],
+    instruments: list[str],
+    absorb: str | None = None,
+    vce: str | None = None,
+    condition: str | None = None,
+) -> str:
+    """Instrumental-variables regression (2SLS/LIML/GMM), with optional
+    high-dimensional fixed effects.
+
+    estimator: "2sls", "liml", or "gmm" (ivregress). Ignored if absorb is
+        set — ivreghdfe always uses 2SLS.
+    dependent: outcome variable.
+    exogenous: included exogenous regressors.
+    endogenous: endogenous regressor(s) to be instrumented.
+    instruments: excluded instrument(s) — need at least as many as
+        endogenous variables (order condition).
+    absorb: space-separated fixed-effect variables — if set, uses
+        ivreghdfe instead of ivregress.
+    vce: variance estimator, e.g. "robust" or "cluster firmid".
+
+    Before calling: sanity-check the exclusion restriction against the
+    research question, and call install_stata_package("ivreghdfe") if
+    absorb is set (or the plain command if otherwise uncertain it's
+    installed). After calling: at REVIEWER rigor and above, run or request
+    first-stage/weak-instrument diagnostics (e.g. estat firststage after
+    ivregress) before treating point estimates as reliable.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    if absorb:
+        result = ivreghdfe(dependent, exogenous, endogenous, instruments, absorb, vce, condition)
+    else:
+        result = ivregress(estimator, dependent, exogenous, endogenous, instruments, vce, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def compute_margins(
+    ctx: RunContext[StataContext],
+    varlist: str | None = None,
+    dydx: str | None = None,
+    at: str | None = None,
+    condition: str | None = None,
+) -> str:
+    """Compute marginal effects / adjusted predictions after a regression
+    (Stata's margins command). Call this immediately after run_regression,
+    run_hdfe_regression, or run_iv_regression — margins operates on the last
+    estimation results in memory.
+
+    varlist: factor-variable(s) to margin over, e.g. "i.treat" (omit for
+        average marginal effects at means).
+    dydx: variable(s) to compute marginal effects/derivatives for, e.g.
+        "x1" or "*" for all.
+    at: fix covariates at specific values, e.g. "x1=(10 20 30) x2=0".
+    condition: optional if-expression restricting the estimation sample.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = margins_effects(varlist, dydx, at, condition)
+    return result.output if result.success else f"Error: {result.error}"
+
+
+@agent.tool
+def plot_margins(ctx: RunContext[StataContext], export_path: str) -> str:
+    """Plot the results of the most recent compute_margins call
+    (marginsplot) and export it as an image, since pystata runs headless
+    and the plot window is not visible to the user.
+
+    export_path: file path ending in .png to save the plot to.
+    """
+    if err := _require_dataset(ctx):
+        return err
+    result = marginsplot_cmd()
+    if not result.success:
+        return f"Error: {result.error}"
+    export_result = run_raw_stata(f'graph export "{export_path}", replace')
+    if export_result.success:
+        return f"{result.output}\n\nPlot exported to {export_path}."
+    return f"{result.output}\n\nWarning: failed to export plot: {export_result.error}"
 
 
 class _HTMLTextExtractor(HTMLParser):

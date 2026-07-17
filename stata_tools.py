@@ -269,9 +269,23 @@ def describe_data() -> StataResult:
     return _run("describe")
 
 
-def summarize(varlist: str = "", detail: bool = False) -> StataResult:
-    """Descriptive statistics."""
+def summarize(
+    varlist: str = "",
+    detail: bool = False,
+    condition: str | None = None,
+    weight_type: str | None = None,
+    weight_var: str | None = None,
+) -> StataResult:
+    """Descriptive statistics.
+
+    weight_type/weight_var: e.g. weight_type="aweight", weight_var="popwt".
+    Both must be set together.
+    """
     code = f"summarize {varlist}"
+    if condition:
+        code += f" if {condition}"
+    if weight_type and weight_var:
+        code += f" [{weight_type}={weight_var}]"
     if detail:
         code += ", detail"
     return _run(code)
@@ -290,12 +304,20 @@ def regress(
     independents: list[str],
     robust: bool = False,
     condition: str | None = None,
+    weight_type: str | None = None,
+    weight_var: str | None = None,
 ) -> StataResult:
-    """OLS regression."""
+    """OLS regression.
+
+    weight_type/weight_var: e.g. weight_type="pweight", weight_var="sampwt"
+    for survey data. Both must be set together.
+    """
     xvars = " ".join(independents)
     code = f"regress {dependent} {xvars}"
     if condition:
         code += f" if {condition}"
+    if weight_type and weight_var:
+        code += f" [{weight_type}={weight_var}]"
     if robust:
         code += ", robust"
     return _run(code)
@@ -741,3 +763,216 @@ def set_stata_locale(locale: str) -> StataResult:
     Silently succeeds even if Stata does not support the locale on this OS.
     """
     return _run(f"set locale_functions {locale}")
+
+
+# --- Estimation table builder (eststo / esttab, from the 'estout' package) ---
+
+def eststo(name: str) -> StataResult:
+    """Store the most recent estimation results under a name, for later
+    inclusion in an esttab side-by-side table."""
+    return _run(f"eststo {name}")
+
+
+def esttab(
+    models: list[str] | None = None,
+    export_path: str | None = None,
+    stats: str | None = None,
+    se: bool = True,
+    star: bool = True,
+    label: bool = True,
+    title: str | None = None,
+    replace: bool = True,
+) -> StataResult:
+    """Render a side-by-side regression table from stored eststo estimates.
+
+    models: names previously passed to eststo, in display order. Omit for
+        all currently stored estimates.
+    export_path: file path to write the table to. Extension controls format:
+        .tex (LaTeX), .rtf (Word-openable), .csv, or .html. Omit to print
+        the table to the Results window only.
+    stats: space-separated summary stat rows, e.g. "N r2 r2_a".
+    se: show standard errors below coefficients.
+    star: show significance stars (* .10 ** .05 *** .01).
+    label: use variable labels instead of names.
+    title: optional table title (used with export_path).
+    replace: overwrite export_path if it already exists.
+    """
+    models_str = " ".join(models) if models else ""
+    code = f'esttab {models_str} using "{export_path}"' if export_path else f"esttab {models_str}"
+    opts = []
+    if se:
+        opts.append("se")
+    if star:
+        opts.append("star(* 0.10 ** 0.05 *** 0.01)")
+    if stats:
+        opts.append(f"stats({stats})")
+    if label:
+        opts.append("label")
+    if title:
+        opts.append(f'title("{title}")')
+    if export_path and replace:
+        opts.append("replace")
+    if opts:
+        code += ", " + " ".join(opts)
+    return _run(code)
+
+
+# --- Merge / append ---
+
+def merge_datasets(
+    merge_type: str,
+    keyvars: str,
+    using: str,
+    generate: str = "_merge",
+    keep: str | None = None,
+    update: bool = False,
+    replace: bool = False,
+    force: bool = False,
+) -> StataResult:
+    """Merge a using dataset into the data in memory (native Stata merge).
+
+    merge_type: "1:1", "1:m", "m:1", or "m:m".
+    keyvars: space-separated key variable(s) present in both datasets.
+    using: path to the using .dta file.
+    generate: name for the match-status variable (errors if it already
+        exists from a prior merge — drop it first or choose a new name).
+    keep: restrict to result codes, e.g. "1 2 3" or "match master using".
+    update/replace: fill in or overwrite missing values from using.
+    force: allow merges when variable storage types conflict.
+    """
+    code = f'merge {merge_type} {keyvars} using "{using}"'
+    opts = []
+    if generate != "_merge":
+        opts.append(f"generate({generate})")
+    if keep:
+        opts.append(f"keep({keep})")
+    if update:
+        opts.append("update")
+    if replace:
+        opts.append("replace")
+    if force:
+        opts.append("force")
+    if opts:
+        code += ", " + " ".join(opts)
+    return _run(code)
+
+
+def merge_report(varname: str = "_merge") -> StataResult:
+    """Tabulate the merge match-status variable to diagnose match quality."""
+    return _run(f"tabulate {varname}")
+
+
+def append_datasets(
+    using: list[str],
+    generate: str | None = None,
+    keep: str | None = None,
+    force: bool = False,
+) -> StataResult:
+    """Append (stack) one or more using datasets below the data in memory.
+
+    using: path(s) to .dta files to append.
+    generate: variable to mark source (1 = master, 2+ = each using file,
+        in the order given).
+    keep: restrict to specific variables.
+    force: allow appending across string/numeric type mismatches.
+    """
+    using_str = " ".join(f'"{u}"' for u in using)
+    code = f"append using {using_str}"
+    opts = []
+    if generate:
+        opts.append(f"generate({generate})")
+    if keep:
+        opts.append(f"keep({keep})")
+    if force:
+        opts.append("force")
+    if opts:
+        code += ", " + " ".join(opts)
+    return _run(code)
+
+
+# --- IV regression and margins ---
+
+def ivregress(
+    estimator: str,
+    dependent: str,
+    exogenous: list[str],
+    endogenous: list[str],
+    instruments: list[str],
+    vce: str | None = None,
+    condition: str | None = None,
+) -> StataResult:
+    """Instrumental-variables regression.
+
+    estimator: "2sls", "liml", or "gmm".
+    exogenous: included exogenous regressors.
+    endogenous: endogenous regressor(s) to be instrumented.
+    instruments: excluded instrument(s).
+    """
+    exog_str = " ".join(exogenous)
+    endog_str = " ".join(endogenous)
+    inst_str = " ".join(instruments)
+    code = f"ivregress {estimator} {dependent} {exog_str} ({endog_str} = {inst_str})"
+    if condition:
+        code += f" if {condition}"
+    if vce:
+        code += f", vce({vce})"
+    return _run(code)
+
+
+def ivreghdfe(
+    dependent: str,
+    exogenous: list[str],
+    endogenous: list[str],
+    instruments: list[str],
+    absorb: str,
+    vce: str | None = None,
+    condition: str | None = None,
+) -> StataResult:
+    """Instrumental-variables regression with high-dimensional fixed effects.
+
+    absorb: space-separated fixed-effect variables, e.g. "firm year".
+    """
+    exog_str = " ".join(exogenous)
+    endog_str = " ".join(endogenous)
+    inst_str = " ".join(instruments)
+    code = f"ivreghdfe {dependent} {exog_str} ({endog_str} = {inst_str})"
+    if condition:
+        code += f" if {condition}"
+    opts = [f"absorb({absorb})"]
+    if vce:
+        opts.append(f"vce({vce})")
+    code += ", " + " ".join(opts)
+    return _run(code)
+
+
+def margins_effects(
+    varlist: str | None = None,
+    dydx: str | None = None,
+    at: str | None = None,
+    condition: str | None = None,
+) -> StataResult:
+    """Marginal effects / adjusted predictions after the last estimation.
+
+    varlist: factor-variable(s) to margin over, e.g. "i.treat". Omit for
+        average marginal effects at means.
+    dydx: variable(s) to compute marginal effects for, e.g. "x1" or "*".
+    at: fix covariates at specific values, e.g. "x1=(10 20 30) x2=0".
+    """
+    code = "margins"
+    if varlist:
+        code += f" {varlist}"
+    if condition:
+        code += f" if {condition}"
+    opts = []
+    if dydx:
+        opts.append(f"dydx({dydx})")
+    if at:
+        opts.append(f"at({at})")
+    if opts:
+        code += ", " + " ".join(opts)
+    return _run(code)
+
+
+def marginsplot_cmd() -> StataResult:
+    """Plot the results of the most recent margins call."""
+    return _run("marginsplot")
